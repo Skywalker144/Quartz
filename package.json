@@ -15,6 +15,10 @@
   "build": {
     "appId": "com.skycheng.quartz",
     "productName": "Quartz",
+    "directories": {
+      "buildResources": "build"
+    },
+    "icon": "build/icon.png",
     "publish": [
       {
         "provider": "github",
@@ -38,17 +42,20 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage"
       ]
