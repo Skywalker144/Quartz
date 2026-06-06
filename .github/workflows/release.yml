@@ -1,0 +1,51 @@
+name: Release
+
+# Push a tag like v0.1.5 → builds macOS (universal: Intel + Apple Silicon) and
+# Windows (NSIS installer + auto-update), and publishes them to the GitHub Release.
+# Manual runs are also allowed (workflow_dispatch) — they publish to the release
+# matching the current package.json version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon runner; builds a universal binary
+            args: --mac --universal
+          - os: windows-latest
+            args: --win nsis --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Public releases ship WITHOUT baked API keys — provide an empty .env so the
+      # `files` glob (which lists .env for local key-baked builds) still resolves.
+      - name: Add empty .env (no baked keys in public builds)
+        shell: bash
+        run: touch .env
+
+      - name: Build & publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # ad-hoc sign (no Apple/Win cert)
+        run: npx electron-builder ${{ matrix.args }} --publish always

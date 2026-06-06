@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-click packager for ChatBox.
 #
-#   ./build.sh                 → macOS dmg + zip (arm64)
+#   ./build.sh                 → macOS dmg + zip (universal: Intel + Apple Silicon)
 #   ./build.sh mac             → same
 #   ./build.sh win             → Windows portable zip (x64) — no Wine needed
 #   ./build.sh all             → both of the above
@@ -44,9 +44,9 @@ build_win() {
 
 echo "▶ building target=$TARGET ${PUBLISH:+(publishing)}"
 case "$TARGET" in
-  mac) npx electron-builder --mac --arm64 $PUBLISH ;;
+  mac) npx electron-builder --mac --universal $PUBLISH ;;
   win) build_win ;;
-  all) npx electron-builder --mac --arm64 $PUBLISH && build_win ;;
+  all) npx electron-builder --mac --universal $PUBLISH && build_win ;;
 esac
 
 echo ""
