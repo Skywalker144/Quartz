@@ -353,7 +353,9 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .sugg-chip:hover { border-color: var(--focus-border); }
 .sugg-chip.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 #messages { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 0 calc(var(--composer-h, 112px) + 8px) var(--nodemap-w); position: relative; }
-.msg-row { padding: 6px 18px; }
+/* Long-conversation perf: let the engine skip layout/paint for off-screen messages.
+   `auto` remembers each row's real height once seen, so scrolling stays accurate. */
+.msg-row { padding: 6px 18px; content-visibility: auto; contain-intrinsic-size: auto 220px; }
 /* node-jump highlight: a soft rounded (squircle) glow behind the turn, not a hard rectangle */
 .msg-row.flash { position: relative; }
 .msg-row.flash > .msg-inner { position: relative; z-index: 1; }
