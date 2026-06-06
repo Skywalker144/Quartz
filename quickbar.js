@@ -252,6 +252,10 @@ function flashCopied() {
 inputEl.addEventListener("input", () => { autoGrow(); reportHeight(); });
 
 inputEl.addEventListener("keydown", (e) => {
+  // An IME (e.g. Chinese input method, even when typing English) uses Enter to COMMIT the
+  // composition — that Enter must be left to the IME, not fire an answer. isComposing is the
+  // standard signal; keyCode 229 is the legacy fallback some IMEs still send.
+  if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) return;
   // ⌘/Ctrl + Enter, or plain Enter once answered → continue in Quartz
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openMain(); return; }
   if (e.key === "Enter" && !e.shiftKey) {
