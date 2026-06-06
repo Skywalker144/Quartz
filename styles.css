@@ -757,3 +757,10 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .data-actions { display: flex; gap: 10px; margin: 4px 0 16px; flex-wrap: wrap; }
 .data-warn { opacity: .82; }
 .data-warn strong { font-weight: 700; color: var(--text); }
+
+/* Inline request-error block inside an assistant bubble (classified message + one-click retry) */
+.msg-error { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 540px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; corner-shape: superellipse(1.6); background: var(--bg-soft); }
+.msg-error-head { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13.5px; }
+.msg-error-ico { font-size: 14px; line-height: 1; }
+.msg-error-body { font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+.msg-error-retry { margin-top: 2px; }

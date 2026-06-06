@@ -1202,6 +1202,18 @@ function buildMessage(msg, index) {
   }
 
   if (isUser) { const p = document.createElement("div"); p.style.whiteSpace = "pre-wrap"; p.textContent = msg.content; contentEl.appendChild(p); }
+  else if (msg.error) {
+    const e = msg.error;
+    const wrap = document.createElement("div"); wrap.className = "msg-error";
+    const head = document.createElement("div"); head.className = "msg-error-head";
+    const ico = document.createElement("span"); ico.className = "msg-error-ico"; ico.textContent = "⚠";
+    const ht = document.createElement("span"); ht.textContent = e.title || "出错了";
+    head.append(ico, ht);
+    const body = document.createElement("div"); body.className = "msg-error-body"; body.textContent = e.body || "";
+    const retry = document.createElement("button"); retry.className = "btn small msg-error-retry"; retry.textContent = "重试"; retry.onclick = () => regenerate(index);
+    wrap.append(head, body, retry);
+    contentEl.appendChild(wrap);
+  }
   else contentEl.innerHTML = msg.content ? renderMarkdown(msg.content) : '<span class="dim">…</span>';
 
   if (!isUser && msg.reasoning) {
@@ -1218,6 +1230,8 @@ function buildMessage(msg, index) {
     // a prompt with no answer after it (e.g. its answer was deleted) gets a 重新回答 button, left of 编辑
     if (conv0 && index === conv0.messages.length - 1) actions.append(mk("refresh", "重新回答", "", () => answerFor(index)));
     actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("trash", "删除", "danger", () => deleteMessage(index)));
+  } else if (msg.error) {
+    actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
     actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
@@ -1498,6 +1512,24 @@ async function errText(resp) {
   try { const j = await resp.json(); em = (j.error && j.error.message) || j.message || JSON.stringify(j.error || j); } catch (e) {}
   return em;
 }
+// Turn a raw request error into a clear, actionable message (title + body) for the inline error block.
+function friendlyError(err) {
+  const raw = (err && err.message) || "";
+  const status = err && err.status;
+  if (!status && /Failed to fetch|NetworkError|ERR_|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|network|fetch failed/i.test(raw))
+    return { title: "连接失败", body: "无法连接到模型服务，请检查网络或代理后重试。" };
+  if (status === 401 || status === 403 || /invalid.*api.*key|incorrect api key|unauthorized|authentication|no auth/i.test(raw))
+    return { title: "API Key 无效", body: "该服务商的 API Key 不正确或已失效。请到 设置 → 模型提供方 检查后重试。" };
+  if (/insufficient|quota|billing|balance|credit|payment|欠费|余额/i.test(raw))
+    return { title: "额度不足", body: "账户额度或余额不足，请到服务商后台充值或检查计费，然后重试。" };
+  if (status === 429 || /rate limit|too many requests|rate_limit/i.test(raw))
+    return { title: "请求过于频繁", body: "触发了服务商限流（429）。稍等几秒再点重试即可。" };
+  if (status === 413 || /context length|maximum context|context window|too long|reduce the length|prompt is too long/i.test(raw))
+    return { title: "上下文过长", body: "本轮对话超出了模型的上下文上限。可点底部「压缩上下文」后重试，或新开一个对话。" };
+  if ((status && status >= 500) || /overloaded|server error|service unavailable|internal error|bad gateway/i.test(raw))
+    return { title: "服务商繁忙", body: "模型服务暂时出错或过载（5xx）。稍后点重试即可。" };
+  return { title: "出错了", body: raw || "未知错误，请重试。" };
+}
 async function pumpSSE(resp, onData) {
   const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
   while (true) {
@@ -1557,7 +1589,7 @@ async function streamChat(ref, payload, opts) {
     const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
     if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; }
     const resp = await fetch(prov.base + "/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
-    if (!resp.ok) throw new Error(await errText(resp));
+    if (!resp.ok) throw Object.assign(new Error(await errText(resp)), { status: resp.status });
     await pumpSSE(resp, (json) => {
       const delta = json.choices && json.choices[0] && json.choices[0].delta;
       if (delta) {
@@ -1577,7 +1609,7 @@ async function streamChat(ref, payload, opts) {
     else if (opts.temp != null) body.temperature = opts.temp; // temperature is incompatible with extended thinking
     const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
     const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
-    if (!resp.ok) throw new Error(await errText(resp));
+    if (!resp.ok) throw Object.assign(new Error(await errText(resp)), { status: resp.status });
     let inTok = 0, outTok = 0;
     await pumpSSE(resp, (json) => {
       if (json.type === "content_block_delta" && json.delta) {
@@ -1674,7 +1706,7 @@ async function runCompletion(conv, opts) {
       history = sliced;
     }
   }
-  let acc = "", racc = "", usage = null, aborted = false;
+  let acc = "", racc = "", usage = null, aborted = false, errInfo = null;
   // While the user is actively selecting text in the transcript, don't rebuild the streaming DOM
   // (that would collapse the selection / snap it to the start). Buffer; the next tick re-renders.
   const userSelecting = () => { const s = window.getSelection && window.getSelection(); return !!(s && !s.isCollapsed && s.rangeCount && box.contains(s.anchorNode)); };
@@ -1692,7 +1724,7 @@ async function runCompletion(conv, opts) {
     acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
     if (err.name === "AbortError") { aborted = true; acc = acc + (acc ? "\n\n_（已停止）_" : "_（已停止生成）_"); }
-    else acc = "⚠️ **出错了：** " + err.message;
+    else errInfo = friendlyError(err);
   }
 
   contentEl.classList.remove("cursor-blink");
@@ -1716,8 +1748,9 @@ async function runCompletion(conv, opts) {
 
   const last = conv.messages[conv.messages.length - 1];
   last.content = acc; if (racc) last.reasoning = racc; if (usage) last.usage = usage;
+  if (errInfo) last.error = errInfo; else delete last.error;   // structured error → inline error block + 重试
   // if this turn was a regenerate / edit-resend, keep the previous answer(s) as switchable variants
-  if (opts && Array.isArray(opts.carryVariants) && opts.carryVariants.length) {
+  if (!errInfo && opts && Array.isArray(opts.carryVariants) && opts.carryVariants.length) {
     let ui = conv.messages.length - 2; while (ui >= 0 && conv.messages[ui].role !== "user") ui--;
     const u = ui >= 0 ? conv.messages[ui] : null;
     last.variants = opts.carryVariants.concat([{
