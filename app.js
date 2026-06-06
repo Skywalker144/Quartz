@@ -59,6 +59,19 @@ function idbSet(key, val) {
     tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   }));
 }
+function idbDel(key) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+  }));
+}
+function idbKeys() {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).getAllKeys();
+    r.onsuccess = () => resolve(r.result || []); r.onerror = () => reject(r.error);
+  }));
+}
 
 /* ===================== State ===================== */
 let state = null;   // assigned by boot() after the async load below
@@ -191,26 +204,76 @@ async function encryptedClone(s) {
   return changed ? Object.assign({}, s, { settings: Object.assign({}, s.settings, { providers: out }) }) : s;
 }
 
-async function loadState() {
-  // Primary store: IndexedDB.
-  let s = null;
-  try { s = await idbGet(IDB_STATE_KEY); } catch (e) { console.warn("idb read failed", e); }
-  if (s && s.settings && s.settings.providers) return ensureShape(await decryptKeysInPlace(s));
+/* Storage is split: a small "meta" record (settings + the ordered lists of conversation ids +
+ * currentId) plus ONE record per conversation ("c:<id>"). save() → persist() then writes only the
+ * meta and the conversations whose content actually changed, so a 200-message image-heavy chat no
+ * longer forces a rewrite of every other conversation. The in-memory `state` shape is unchanged, so
+ * the rest of the app is untouched. Legacy single-blob installs migrate on first load. */
+const META_KEY = "meta", CONV_PREFIX = "c:";
+let _convSig = Object.create(null);   // conv id -> content hash (change detection for incremental writes)
+let _metaSig = "";                    // hash of the PLAINTEXT meta (encryption is non-deterministic)
+function hashStr(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return h + ":" + str.length; }
+// The meta record = the whole state minus the heavy conversation arrays (replaced by id-order lists).
+function metaOf(s) {
+  const m = Object.assign({}, s);
+  m.order = (s.conversations || []).map(c => c.id);
+  m.archivedOrder = (s.archived || []).map(c => c.id);
+  delete m.conversations; delete m.archived;
+  m._split = 1;
+  return m;
+}
+async function loadConvs(ids) {
+  const out = [];
+  for (const id of ids || []) { let c = null; try { c = await idbGet(CONV_PREFIX + id); } catch (e) {} if (c && c.id) out.push(c); }
+  return out;
+}
 
-  // One-time migration from the old localStorage blobs (kept intact afterwards as a backup).
-  const ls = readJSON(LS_KEY);
-  if (ls && ls.settings && ls.settings.providers) { const ns = ensureShape(await decryptKeysInPlace(ls)); await persist(ns); return ns; }
+async function loadState() {
+  // New split format: a meta record + per-conversation records.
+  let meta = null;
+  try { meta = await idbGet(META_KEY); } catch (e) { console.warn("idb meta read failed", e); }
+  if (meta && meta.settings && meta.settings.providers) {
+    const convs = await loadConvs(meta.order), arch = await loadConvs(meta.archivedOrder);
+    _convSig = Object.create(null);                       // prime from the AS-STORED records …
+    for (const c of convs.concat(arch)) _convSig[c.id] = hashStr(JSON.stringify(c));   // … so a shapeConv migration re-persists, but unchanged chats don't
+    _metaSig = "";
+    const s = Object.assign({}, meta, { conversations: convs, archived: arch });
+    delete s.order; delete s.archivedOrder; delete s._split;
+    return ensureShape(await decryptKeysInPlace(s));
+  }
+  // Migrate a legacy single blob (IndexedDB "state", else localStorage) into the split format.
+  let blob = null;
+  try { blob = await idbGet(IDB_STATE_KEY); } catch (e) { console.warn("idb read failed", e); }
+  if (!(blob && blob.settings && blob.settings.providers)) { const ls = readJSON(LS_KEY); if (ls && ls.settings && ls.settings.providers) blob = ls; }
+  if (blob && blob.settings && blob.settings.providers) {
+    const ns = ensureShape(await decryptKeysInPlace(blob));
+    _convSig = Object.create(null); _metaSig = "";        // force a full split write; old "state" stays as a frozen backup
+    await persist(ns);
+    return ns;
+  }
   const old = readJSON(OLD_KEY);
-  if (old && old.settings) { const ns = migrate(old); await persist(ns); return ns; }
+  if (old && old.settings) { const ns = migrate(old); _convSig = Object.create(null); _metaSig = ""; await persist(ns); return ns; }
   return freshState();
 }
-// Write the whole state blob to IndexedDB (API keys encrypted at rest), falling back to localStorage.
+// Incremental save: write meta (only when it changed) + just the changed conversations, and drop
+// records for deleted ones. API keys in meta are encrypted at rest. Falls back to a single blob.
 async function persist(s) {
-  const toSave = await encryptedClone(s);
-  try { await idbSet(IDB_STATE_KEY, toSave); return true; }
-  catch (e) {
-    console.warn("idb write failed, trying localStorage", e);
-    try { localStorage.setItem(LS_KEY, JSON.stringify(toSave)); return true; }
+  try {
+    const ops = [];
+    const metaSig = JSON.stringify(metaOf(s));            // plaintext + deterministic → reliable change check
+    if (metaSig !== _metaSig) ops.push(idbSet(META_KEY, metaOf(await encryptedClone(s))).then(() => { _metaSig = metaSig; }));
+    const present = new Set();
+    for (const c of (s.conversations || []).concat(s.archived || [])) {
+      present.add(c.id);
+      const h = hashStr(JSON.stringify(c));
+      if (_convSig[c.id] !== h) ops.push(idbSet(CONV_PREFIX + c.id, c).then(() => { _convSig[c.id] = h; }));
+    }
+    for (const id of Object.keys(_convSig)) if (!present.has(id)) { ops.push(idbDel(CONV_PREFIX + id).catch(() => {})); delete _convSig[id]; }
+    await Promise.all(ops);
+    return true;
+  } catch (e) {
+    console.warn("idb split write failed, trying localStorage blob", e);
+    try { localStorage.setItem(LS_KEY, JSON.stringify(await encryptedClone(s))); return true; }
     catch (e2) { console.warn("save failed", e2); toast("⚠️ 保存失败：存储空间不足或不可用。可删除部分旧对话/附件后重试。"); return false; }
   }
 }
