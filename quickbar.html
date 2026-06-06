@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://openrouter.ai https://api.openai.com https://api.anthropic.com https://api.deepseek.com https://generativelanguage.googleapis.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>快速提问</title>
+<link rel="stylesheet" href="quickbar.css">
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+</head>
+<body>
+  <div id="wrap">
+    <div id="bar">
+      <div id="qrow">
+        <svg id="qicon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <textarea id="q" rows="1" placeholder="问点什么…" spellcheck="false" autocomplete="off"></textarea>
+        <span id="qmodel"></span>
+      </div>
+      <div id="qans" hidden>
+        <div id="qans-scroll">
+          <div id="qans-content" class="md"></div>
+        </div>
+        <div id="qfoot">
+          <span id="qhint"></span>
+          <div id="qactions">
+            <button id="qcopy" class="qbtn" hidden>复制 <kbd>⌘C</kbd></button>
+            <button id="qcont" class="qbtn cont" hidden>在 Quartz 中继续 <kbd>↩</kbd></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="quickbar.js"></script>
+</body>
+</html>

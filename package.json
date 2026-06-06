@@ -1,0 +1,65 @@
+{
+  "name": "quartz",
+  "productName": "Quartz",
+  "version": "0.1.0",
+  "description": "A simple, fast Quartz desktop app powered by OpenRouter",
+  "author": "steve.tu",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.steve.quartz",
+    "productName": "Quartz",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Skywalker144",
+        "repo": "Quartz",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "quickbar.html",
+      "quickbar.css",
+      "quickbar.js",
+      "preload.js",
+      "main.js",
+      ".env",
+      "vendor/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^42.3.3",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "katex": "^0.17.0"
+  }
+}

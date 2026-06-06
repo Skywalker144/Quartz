@@ -1,0 +1,309 @@
+"use strict";
+/* Quick-ask bar (Option+Space). A standalone overlay renderer that shares the main app's
+ * stored config — it reads the same IndexedDB record the app writes (chatbox / kv / "state"),
+ * so your API key, default model, system prompt and theme all come along automatically.
+ * The streaming below mirrors app.js's streamChat for the default provider (text-only). */
+
+const api = window.chatbox || {};
+
+const PROVIDERS = {
+  openrouter: { kind: "openai", base: "https://openrouter.ai/api/v1" },
+  openai:     { kind: "openai", base: "https://api.openai.com/v1" },
+  anthropic:  { kind: "anthropic", base: "https://api.anthropic.com/v1" },
+  deepseek:   { kind: "openai", base: "https://api.deepseek.com/v1" },
+  google:     { kind: "openai", base: "https://generativelanguage.googleapis.com/v1beta/openai" },
+};
+
+/* ---------- DOM ---------- */
+const wrap = document.getElementById("wrap");
+const inputEl = document.getElementById("q");
+const modelEl = document.getElementById("qmodel");
+const ansEl = document.getElementById("qans");
+const ansScroll = document.getElementById("qans-scroll");
+const ansContent = document.getElementById("qans-content");
+const hintEl = document.getElementById("qhint");
+const copyBtn = document.getElementById("qcopy");
+const contBtn = document.getElementById("qcont");
+
+/* ---------- shared config (pushed up from the main app via IPC) ----------
+ * file:// pages don't share IndexedDB, so we can't read the app's store here.
+ * The main app publishes its config to the main process, which hands it to us
+ * on demand (getQuickConfig) and on every summon (onQuickFocus). */
+let cfg = null;            // { providers, chat:{provider,model}, theme, system, temp }
+let mode = "idle";         // idle | asking | answered
+let controller = null;     // AbortController for the in-flight request
+let lastQuestion = "";
+let lastAnswer = "";
+let lastUsage = null;
+
+function applyConfig(c) {
+  if (c && typeof c === "object") cfg = c;
+  if (!cfg) cfg = { providers: {}, chat: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" }, theme: "auto", system: "", temp: undefined };
+  if (!cfg.chat) cfg.chat = { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" };
+  applyTheme(cfg.theme || "auto");
+  // show the user's custom model name if they set one, else the bare model id tail
+  const label = (cfg.chat.name && cfg.chat.name.trim()) ? cfg.chat.name.trim() : ((cfg.chat.model || "").split("/").pop() || cfg.chat.model || "");
+  modelEl.textContent = label;
+  modelEl.title = cfg.chat.model || "";
+}
+
+function keyFor(provider) { const p = cfg && cfg.providers && cfg.providers[provider]; return (p && p.key) ? p.key.trim() : ""; }
+
+function applyTheme(theme) {
+  const dark = theme === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : theme === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (cfg && cfg.theme === "auto") applyTheme("auto"); });
+
+/* ---------- markdown ---------- */
+function renderMd(t) {
+  let html;
+  if (window.marked) { try { html = marked.parse(t, { breaks: true, gfm: true }); } catch (e) {} }
+  if (html == null) { const d = document.createElement("div"); d.textContent = t; html = "<p>" + d.innerHTML.replace(/\n/g, "<br>") + "</p>"; }
+  if (window.DOMPurify) return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["target"], FORBID_TAGS: ["style", "form"] });
+  return html;
+}
+
+/* ---------- streaming (mirrors app.js streamChat, text-only) ---------- */
+async function errText(resp) {
+  let em = "请求失败：HTTP " + resp.status;
+  try { const j = await resp.json(); em = (j.error && j.error.message) || j.message || em; } catch (e) {}
+  return em;
+}
+async function pumpSSE(resp, onData) {
+  const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
+  while (true) {
+    const { done, value } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n"); buf = lines.pop();
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const data = t.slice(5).trim();
+      if (data === "[DONE]") continue;
+      let json; try { json = JSON.parse(data); } catch (e) { continue; }
+      onData(json);
+    }
+  }
+}
+async function streamAsk(userText, signal, onDelta) {
+  const ref = cfg.chat;
+  const prov = PROVIDERS[ref.provider];
+  const key = keyFor(ref.provider);
+  if (!prov) throw new Error("未知的提供方：" + ref.provider);
+  if (!key) { const e = new Error("NO_KEY"); e.code = "NO_KEY"; throw e; }
+  const sys = cfg.system || "";
+  const temp = (cfg.temp != null && cfg.temp !== "") ? Number(cfg.temp) : undefined;
+  let acc = "", usage = null;
+
+  if (prov.kind === "openai") {
+    const msgs = [];
+    if (sys) msgs.push({ role: "system", content: sys });
+    msgs.push({ role: "user", content: userText });
+    const body = { model: ref.model, messages: msgs, stream: true };
+    if (temp != null) body.temperature = temp;
+    const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
+    if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; body.usage = { include: true }; }
+    else if (ref.provider === "openai" || ref.provider === "deepseek") body.stream_options = { include_usage: true };
+    const resp = await fetch(prov.base + "/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal });
+    if (!resp.ok) throw new Error(await errText(resp));
+    await pumpSSE(resp, (j) => {
+      const d = j.choices && j.choices[0] && j.choices[0].delta;
+      if (d && d.content) { acc += d.content; onDelta(acc); }
+      if (j.usage) usage = { prompt_tokens: j.usage.prompt_tokens, completion_tokens: j.usage.completion_tokens, cost: j.usage.cost };
+    });
+  } else if (prov.kind === "anthropic") {
+    const body = { model: ref.model, max_tokens: 4096, stream: true, messages: [{ role: "user", content: userText }] };
+    if (sys) body.system = sys;
+    if (temp != null) body.temperature = temp;
+    const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
+    const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal });
+    if (!resp.ok) throw new Error(await errText(resp));
+    let inTok = 0, outTok = 0;
+    await pumpSSE(resp, (j) => {
+      if (j.type === "content_block_delta" && j.delta && j.delta.type === "text_delta") { acc += j.delta.text; onDelta(acc); }
+      else if (j.type === "message_start" && j.message && j.message.usage) inTok = j.message.usage.input_tokens || 0;
+      else if (j.type === "message_delta" && j.usage && j.usage.output_tokens != null) outTok = j.usage.output_tokens;
+    });
+    usage = { prompt_tokens: inTok, completion_tokens: outTok };
+  } else throw new Error("不支持的提供方类型");
+
+  return { text: acc, usage };
+}
+
+/* ---------- window height: grow/shrink the panel to fit content ---------- */
+function reportHeight() {
+  requestAnimationFrame(() => {
+    const h = Math.ceil(wrap.getBoundingClientRect().height);
+    api.quickResize && api.quickResize(h);
+  });
+}
+
+/* ---------- UI helpers ---------- */
+// Loading / streaming caret — the same blinking block the main app shows before & during output.
+function setLoading(on) { ansContent.classList.toggle("cursor-blink", on); }
+// Show top/bottom edge fades only when the answer is actually scrolled out of view.
+function updateFades() {
+  const el = ansContent;
+  const atTop = el.scrollTop <= 1;
+  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+  ansScroll.classList.toggle("fade-top", !atTop);
+  ansScroll.classList.toggle("fade-bottom", !atBottom);
+}
+function showAnswer(show) {
+  ansEl.hidden = !show;
+  if (!show) {
+    ansContent.innerHTML = ""; setLoading(false);
+    ansScroll.classList.remove("fade-top", "fade-bottom");
+    hintEl.textContent = ""; hintEl.classList.remove("error"); copyBtn.hidden = true; contBtn.hidden = true;
+  }
+  reportHeight();
+}
+function setHint(text, isError) {
+  hintEl.classList.toggle("error", !!isError);
+  hintEl.innerHTML = "";
+  hintEl.appendChild(document.createTextNode(text || ""));
+}
+function autoGrow() {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(96, inputEl.scrollHeight) + "px";
+}
+
+function resetAll() {
+  if (controller) { try { controller.abort(); } catch (e) {} controller = null; }
+  mode = "idle"; lastQuestion = ""; lastAnswer = ""; lastUsage = null;
+  inputEl.value = ""; autoGrow();
+  setLoading(false); showAnswer(false);
+}
+
+/* ---------- actions ---------- */
+async function ask() {
+  const text = inputEl.value.trim();
+  if (!text || mode === "asking") return;
+  if (controller) { try { controller.abort(); } catch (e) {} }
+  controller = new AbortController();
+  mode = "asking"; lastQuestion = text; lastAnswer = ""; lastUsage = null;
+  showAnswer(true);
+  ansContent.innerHTML = "";
+  setLoading(true);            // blinking caret shows immediately, before the first token
+  setHint("", false);
+  copyBtn.hidden = true; contBtn.hidden = true;
+  reportHeight();
+
+  try {
+    const r = await streamAsk(text, controller.signal, (acc) => {
+      lastAnswer = acc;
+      ansContent.innerHTML = renderMd(acc);
+      updateFades();                 // no auto-scroll — the answer stays put, user scrolls if they want
+      reportHeight();
+    });
+    lastAnswer = r.text || lastAnswer || "（没有返回内容）";
+    lastUsage = r.usage || null;
+    ansContent.innerHTML = renderMd(lastAnswer);
+    mode = "answered";
+    copyBtn.hidden = false; contBtn.hidden = false;
+    setHint("Enter 进入 Quartz · ⌘C 复制 · Esc 关闭", false);
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      // user dismissed mid-stream — leave whatever we have
+      mode = lastAnswer ? "answered" : "idle";
+      if (lastAnswer) { copyBtn.hidden = false; contBtn.hidden = false; }
+    } else if (err && err.code === "NO_KEY") {
+      mode = "idle";
+      setHint("未配置 API Key，请在 Quartz 设置中添加", true);
+      const a = document.createElement("a"); a.textContent = "打开 Quartz"; a.onclick = () => openMain();
+      hintEl.appendChild(document.createTextNode("  "));
+      hintEl.appendChild(a);
+      contBtn.hidden = false; contBtn.textContent = "打开 Quartz";
+    } else {
+      mode = "answered";
+      ansContent.innerHTML = renderMd("⚠️ **出错了：** " + (err && err.message ? err.message : String(err)));
+    }
+  } finally {
+    setLoading(false);
+    updateFades();
+    reportHeight();
+  }
+}
+
+function openMain() {
+  api.quickHandoff && api.quickHandoff({
+    question: lastQuestion || inputEl.value.trim(),
+    answer: lastAnswer || null,
+    usage: lastUsage || null,
+    model: cfg ? cfg.chat : null,
+  });
+  // the window hides via main; reset for next time
+  setTimeout(resetAll, 150);
+}
+
+/* ---------- copy helpers ---------- */
+let _copyLabel = copyBtn.innerHTML;
+function flashCopied() {
+  if (!lastAnswer) return;
+  navigator.clipboard.writeText(lastAnswer).then(() => {
+    copyBtn.textContent = "已复制";
+    clearTimeout(copyBtn._t);
+    copyBtn._t = setTimeout(() => { copyBtn.innerHTML = _copyLabel; }, 1200);
+  }).catch(() => {});
+}
+
+/* ---------- events ---------- */
+inputEl.addEventListener("input", () => { autoGrow(); reportHeight(); });
+
+inputEl.addEventListener("keydown", (e) => {
+  // ⌘/Ctrl + Enter, or plain Enter once answered → continue in Quartz
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openMain(); return; }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    if (mode === "answered") openMain();
+    else if (mode !== "asking") ask();
+    return;
+  }
+});
+
+// These work no matter what's focused inside the bar (input, answer text, or body) — the bug
+// was Esc only firing while the textarea had focus.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (mode === "asking") { if (controller) { try { controller.abort(); } catch (err) {} } setLoading(false); }
+    else api.quickHide && api.quickHide();
+    return;
+  }
+  // ⌘C / Ctrl+C after an answer copies the whole answer — unless the user has a selection of
+  // their own (then let the native copy take that).
+  if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C")) {
+    if (mode !== "answered" || !lastAnswer) return;
+    const sel = (window.getSelection && window.getSelection().toString()) || "";
+    const inputSel = inputEl.selectionStart !== inputEl.selectionEnd;
+    if (sel.trim() || inputSel) return;
+    e.preventDefault();
+    flashCopied();
+  }
+});
+
+ansContent.addEventListener("scroll", updateFades);
+copyBtn.addEventListener("click", () => flashCopied());
+contBtn.addEventListener("click", () => openMain());
+
+// Each time the bar is summoned: refresh config (key/model/theme may have changed),
+// start clean, focus and select any leftover text.
+api.onQuickFocus && api.onQuickFocus((c) => {
+  applyConfig(c);
+  showAnswer(false);
+  mode = "idle"; lastAnswer = ""; lastUsage = null;
+  setLoading(false);
+  inputEl.focus();
+  inputEl.select();
+  reportHeight();
+});
+
+/* ---------- init ---------- */
+(async () => {
+  let c = null;
+  try { c = api.getQuickConfig ? await api.getQuickConfig() : null; } catch (e) {}
+  applyConfig(c);
+})();
+autoGrow();
+reportHeight();
