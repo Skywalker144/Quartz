@@ -407,6 +407,10 @@
               <div class="about-logo"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
               <div class="about-name">Quartz</div>
               <div class="about-ver" id="about-version">v0.1.0</div>
+              <div class="about-update">
+                <button class="btn small" id="about-check-update" type="button">检查更新</button>
+                <span class="about-update-status" id="about-update-status"></span>
+              </div>
               <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，支持 OpenRouter / OpenAI / Anthropic / DeepSeek / Google，内置全局速答(⌥Space)与一键导出。</p>
               <div class="about-meta" id="about-meta"></div>
             </div>
@@ -416,8 +420,12 @@
     </div>
   </div>
 
-  <!-- Auto-update notice (bottom-left) -->
-  <button id="update-pill" hidden></button>
+  <!-- Auto-update notice (top-left, beside the traffic lights) -->
+  <div id="update-pill" hidden>
+    <button class="upd-main" type="button"><span class="upd-dot"></span><span class="upd-text"></span></button>
+    <button class="upd-x" type="button" title="忽略此版本" aria-label="忽略此版本"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    <div class="upd-bar"><i></i></div>
+  </div>
 
   <!-- Custom confirm dialog -->
   <div id="confirm-bg">

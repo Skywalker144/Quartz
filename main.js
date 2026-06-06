@@ -270,33 +270,124 @@ ipcMain.on("set-titlebar-overlay", (_e, o) => {
   try { mainWindow.setTitleBarOverlay(o); } catch (e) {}
 });
 
-/* ===================== Auto-update (GitHub releases via electron-updater) ===================== */
-// Windows (NSIS): downloads in the background → "重启以更新" pill. macOS without an Apple cert
-// can't self-install, so it's notify-only → "前往下载" pill that opens the releases page.
-let lastUpdate = null;   // cached so the renderer can query on boot
+/* ===================== Auto-update (GitHub releases) ===================== */
+// Windows (NSIS): electron-updater downloads + self-installs via quitAndInstall.
+// macOS is ad-hoc signed, so Squirrel.Mac can't self-install. Instead we run our OWN
+// updater: electron-updater only CHECKS; on mac we download the zip ourselves (Chromium
+// net, proxy-aware), verify its sha512, then swap the .app bundle in place and relaunch.
+const GH_OWNER = "Skywalker144", GH_REPO = "Quartz";
+let lastUpdate = null;          // cached so the renderer can query on boot
+let pendingUpdate = null;       // { version, zipPath } once a mac update is downloaded & verified
 function uSend(payload) {
   lastUpdate = payload;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("update-status", payload);
 }
-function releasesUrl() {
-  try { const p = (require("./package.json").build.publish || [])[0] || {}; return "https://github.com/" + p.owner + "/" + p.repo + "/releases/latest"; }
-  catch (e) { return "https://github.com"; }
+function releasesUrl() { return `https://github.com/${GH_OWNER}/${GH_REPO}/releases/latest`; }
+function ignoredPath() { return path.join(app.getPath("userData"), "ignored-update"); }
+function getIgnored() { try { return fs.readFileSync(ignoredPath(), "utf8").trim(); } catch (e) { return ""; } }
+function setIgnored(v) { try { fs.writeFileSync(ignoredPath(), v || "", "utf8"); } catch (e) {} }
+function appBundlePath() { return path.resolve(path.dirname(process.execPath), "..", ".."); } // …/Quartz.app
+
+// Stream a URL to disk via Chromium's net stack (follows redirects, honours system proxy).
+function downloadTo(url, dest, onProgress) {
+  return new Promise((resolve, reject) => {
+    const { net } = require("electron");
+    const req = net.request(url);
+    req.on("response", (res) => {
+      if (res.statusCode !== 200) { reject(new Error("HTTP " + res.statusCode)); return; }
+      const lh = res.headers["content-length"];
+      const total = parseInt(Array.isArray(lh) ? lh[0] : (lh || 0), 10) || 0;
+      const file = fs.createWriteStream(dest);
+      let got = 0;
+      res.on("data", (c) => { got += c.length; file.write(c); if (total) onProgress(Math.min(99, Math.round(got / total * 100))); });
+      res.on("end", () => file.end(resolve));
+      res.on("error", reject);
+      file.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
+
+async function downloadMacUpdate(info) {
+  const ver = info && info.version;
+  const entry = ((info && info.files) || []).find(f => /-mac\.zip$/.test(f.url)) || {};
+  const name = entry.url || `Quartz-${ver}-arm64-mac.zip`;
+  const url = `https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/v${ver}/${name}`;
+  const dir = path.join(app.getPath("userData"), "updates");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  const dest = path.join(dir, name);
+  uSend({ state: "downloading", version: ver, percent: 0 });
+  try {
+    await downloadTo(url, dest, (pct) => uSend({ state: "downloading", version: ver, percent: pct }));
+    if (entry.sha512) {
+      const got = require("crypto").createHash("sha512").update(fs.readFileSync(dest)).digest("base64");
+      if (got !== entry.sha512) throw new Error("下载校验失败");
+    }
+    pendingUpdate = { version: ver, zipPath: dest };
+    uSend({ state: "ready", version: ver });
+  } catch (e) {
+    uSend({ state: "error", version: ver, message: e.message });
+  }
+}
+
+// Detached shell helper: wait for us to quit, unzip the new build, swap it in (keeping a
+// rollback copy), strip quarantine so Gatekeeper won't block the ad-hoc app, relaunch.
+const MAC_SWAP_SCRIPT = `#!/bin/sh
+ZIP="$1"; APP="$2"; DIR="$(dirname "$ZIP")/_x"
+i=0; while /usr/bin/pgrep -f "$APP/Contents/MacOS/" >/dev/null 2>&1 && [ $i -lt 80 ]; do sleep 0.25; i=$((i+1)); done
+rm -rf "$DIR"; mkdir -p "$DIR"
+/usr/bin/ditto -x -k "$ZIP" "$DIR" || { open "$APP"; exit 1; }
+NEW="$DIR/$(basename "$APP")"
+[ -d "$NEW" ] || NEW="$(/usr/bin/find "$DIR" -maxdepth 1 -name '*.app' | head -1)"
+[ -d "$NEW" ] || { open "$APP"; exit 1; }
+/usr/bin/xattr -dr com.apple.quarantine "$NEW" 2>/dev/null
+rm -rf "$APP.bak"
+mv "$APP" "$APP.bak" || { open "$APP"; exit 1; }
+if mv "$NEW" "$APP"; then rm -rf "$APP.bak"; else mv "$APP.bak" "$APP"; open "$APP"; exit 1; fi
+/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+rm -rf "$DIR"
+open "$APP"
+`;
+function installMacUpdate() {
+  if (!pendingUpdate || !pendingUpdate.zipPath) { shell.openExternal(releasesUrl()); return; }
+  try {
+    const script = path.join(os.tmpdir(), "quartz-self-update.sh");
+    fs.writeFileSync(script, MAC_SWAP_SCRIPT, { mode: 0o755 });
+    require("child_process").spawn("/bin/sh", [script, pendingUpdate.zipPath, appBundlePath()], { detached: true, stdio: "ignore" }).unref();
+    setTimeout(() => app.quit(), 250);
+  } catch (e) { uSend({ state: "error", message: e.message }); }
+}
+
 function setupAutoUpdate() {
   if (!autoUpdater || !app.isPackaged) return;   // no updates in dev
   const isMac = process.platform === "darwin";
-  autoUpdater.autoDownload = !isMac;              // ad-hoc/unsigned mac can't auto-install
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.on("update-available", (info) => uSend({ state: isMac ? "available" : "downloading", version: info && info.version }));
-  autoUpdater.on("download-progress", (p) => uSend({ state: "downloading", percent: Math.round((p && p.percent) || 0) }));
-  autoUpdater.on("update-downloaded", (info) => uSend({ state: "ready", version: info && info.version }));
-  autoUpdater.on("error", () => { /* offline / no release / proxy — stay quiet */ });
+  autoUpdater.autoDownload = !isMac;             // win: updater downloads NSIS; mac: we download ourselves
+  autoUpdater.autoInstallOnAppQuit = !isMac;
+  autoUpdater.on("update-available", (info) => {
+    const ver = info && info.version;
+    if (ver && ver === getIgnored()) { uSend({ state: "none", version: ver, ignored: true }); return; }
+    if (isMac) downloadMacUpdate(info);
+    else uSend({ state: "downloading", version: ver });
+  });
+  autoUpdater.on("update-not-available", (info) => uSend({ state: "none", version: info && info.version }));
+  autoUpdater.on("download-progress", (p) => { if (process.platform !== "darwin") uSend({ state: "downloading", percent: Math.round((p && p.percent) || 0) }); });
+  autoUpdater.on("update-downloaded", (info) => { pendingUpdate = { version: info && info.version }; uSend({ state: "ready", version: info && info.version }); });
+  autoUpdater.on("error", (e) => uSend({ state: "error", message: e && e.message }));
   autoUpdater.checkForUpdates().catch(() => {});
   setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000);
 }
 ipcMain.handle("update-status-get", () => lastUpdate);
-ipcMain.on("update-action", () => {
-  if (process.platform === "darwin") shell.openExternal(releasesUrl());
+ipcMain.handle("update-check", async () => {
+  if (!autoUpdater || !app.isPackaged) return { state: "dev" };
+  uSend({ state: "checking" });
+  try { await autoUpdater.checkForUpdates(); return { ok: true }; }
+  catch (e) { uSend({ state: "error", message: e && e.message }); return { ok: false, error: e && e.message }; }
+});
+ipcMain.on("update-action", (_e, action) => {
+  if (action === "ignore") { const v = lastUpdate && lastUpdate.version; if (v) setIgnored(v); uSend({ state: "none", version: v, ignored: true }); return; }
+  if (action === "page") { shell.openExternal(releasesUrl()); return; }
+  if (process.platform === "darwin") installMacUpdate();
   else if (autoUpdater) { try { autoUpdater.quitAndInstall(); } catch (e) {} }
 });
 

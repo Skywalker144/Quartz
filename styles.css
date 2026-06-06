@@ -309,12 +309,25 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 #find-bar button:hover:not(:disabled) { background: var(--accent-soft); color: var(--text); }
 #find-bar button:disabled { opacity: .4; cursor: default; }
 
-/* ---- auto-update pill (bottom-left) ---- */
-#update-pill { position: fixed; left: 14px; bottom: 14px; z-index: 60; display: inline-flex; align-items: center; gap: 7px; max-width: 280px; padding: 8px 13px; font: inherit; font-size: 12.5px; color: var(--accent-text); background: var(--accent); border: none; border-radius: 999px; box-shadow: var(--shadow-pop); cursor: pointer; }
+/* ---- auto-update pill (top-left, beside the mac traffic lights, themed like the sidebar) ---- */
+#update-pill { position: fixed; top: 6px; left: 14px; z-index: 60; display: inline-flex; align-items: center; gap: 0;
+  max-width: 340px; padding: 2px; color: var(--text); background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 10px; corner-shape: superellipse(1.6); box-shadow: 0 6px 20px rgba(0,0,0,.20); overflow: hidden; -webkit-app-region: no-drag; }
+[data-platform="mac"] #update-pill { left: 84px; top: 4px; }   /* sit in the top strip, right of the traffic lights */
 #update-pill[hidden] { display: none; }
-#update-pill:hover { opacity: .9; }
-#update-pill.info { color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); cursor: default; }
-#update-pill .upd-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+#update-pill .upd-main { display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px; margin: 0; font: inherit; font-size: 12px; color: inherit; background: none; border: none; border-radius: 8px; cursor: default; white-space: nowrap; }
+#update-pill .upd-main.clickable { cursor: pointer; }
+#update-pill .upd-main.clickable:hover { background: rgba(127,127,127,.13); }
+#update-pill .upd-text { line-height: 1; }
+#update-pill .upd-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text); flex-shrink: 0; }
+#update-pill.busy .upd-dot { background: var(--text-dim); animation: updPulse 1s ease-in-out infinite; }
+@keyframes updPulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+#update-pill .upd-x { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; margin: 0; color: var(--text-dim); background: none; border: none; border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+#update-pill .upd-x[hidden] { display: none; }
+#update-pill .upd-x:hover { color: var(--text); background: rgba(127,127,127,.16); }
+#update-pill .upd-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; }
+#update-pill .upd-bar[hidden] { display: none; }
+#update-pill .upd-bar i { display: block; height: 100%; width: 8%; background: var(--text); opacity: .5; transition: width .25s ease; }
 
 /* ---- export dropdown (header button) ---- */
 .export-menu { position: fixed; z-index: 60; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow-pop); padding: 5px; min-width: 188px; display: flex; flex-direction: column; gap: 1px; }
@@ -326,6 +339,8 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .about-logo { color: var(--text); margin-bottom: 12px; }
 .about-name { font-size: 22px; font-weight: 700; letter-spacing: .02em; }
 .about-ver { font-size: 13px; color: var(--text-dim); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.about-update { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.about-update-status { font-size: 12px; color: var(--text-dim); }
 .about-desc { font-size: 13.5px; color: var(--text-dim); line-height: 1.6; max-width: 420px; margin: 16px 0 0; }
 .about-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 14px; font-variant-numeric: tabular-nums; opacity: .8; }
 

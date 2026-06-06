@@ -2829,23 +2829,61 @@ if (window.chatbox && window.chatbox.onQuickShortcutResult) {
     else setShortcutHint(id, "已生效", false);
   });
 }
-// Auto-update notice (bottom-left pill)
+// Auto-update notice (top-left pill, beside the traffic lights).
+// (data-platform is set in boot — "mac" | "win" | "other" — and drives the pill's left offset.)
 function renderUpdatePill(s) {
   const pill = document.getElementById("update-pill"); if (!pill) return;
-  const v = (s && s.version) ? (" v" + s.version) : "";
-  if (s && s.state === "ready") {           // downloaded (Windows) → restart to install
-    pill.hidden = false; pill.className = ""; pill.innerHTML = '<span class="upd-dot"></span>重启以更新' + v;
-    pill.onclick = () => window.chatbox.updateAction();
-  } else if (s && s.state === "available") { // notify-only (macOS) → open releases page
-    pill.hidden = false; pill.className = ""; pill.innerHTML = '<span class="upd-dot"></span>有新版本' + v + ' · 前往下载';
-    pill.onclick = () => window.chatbox.updateAction();
-  } else if (s && s.state === "downloading") {
-    pill.hidden = false; pill.className = "info";
-    pill.innerHTML = '<span class="upd-dot"></span>正在下载更新' + (s.percent != null ? ("… " + s.percent + "%") : "…");
-    pill.onclick = null;
-  } else { pill.hidden = true; }
+  const main = pill.querySelector(".upd-main"), txt = pill.querySelector(".upd-text");
+  const xbtn = pill.querySelector(".upd-x"), bar = pill.querySelector(".upd-bar");
+  const barFill = bar && bar.querySelector("i");
+  const st = s && s.state, v = (s && s.version) ? (" " + s.version) : "";
+  pill.className = ""; if (xbtn) xbtn.hidden = true; if (bar) bar.hidden = true;
+  if (main) { main.onclick = null; main.classList.remove("clickable"); }
+  let show = true, text = "";
+  if (st === "ready") {
+    pill.className = "ready"; text = "重启以更新到" + v;
+    if (main) { main.onclick = () => window.chatbox.updateAction("install"); main.classList.add("clickable"); }
+    if (xbtn) xbtn.hidden = false;
+  } else if (st === "downloading") {
+    pill.className = "busy"; text = "正在下载更新" + v + (s.percent != null ? " · " + s.percent + "%" : "…");
+    if (bar) { bar.hidden = false; if (barFill) barFill.style.width = (s.percent != null ? s.percent : 8) + "%"; }
+    if (xbtn) xbtn.hidden = false;
+  } else if (st === "checking") {
+    pill.className = "busy"; text = "正在检查更新…";
+  } else if (st === "error") {
+    pill.className = "err"; text = "更新下载失败 · 前往下载";
+    if (main) { main.onclick = () => window.chatbox.updateAction("page"); main.classList.add("clickable"); }
+    if (xbtn) xbtn.hidden = false;
+  } else if (st === "available") {   // platforms that only notify
+    pill.className = "ready"; text = "有新版本" + v + " · 下载更新";
+    if (main) { main.onclick = () => window.chatbox.updateAction("install"); main.classList.add("clickable"); }
+    if (xbtn) xbtn.hidden = false;
+  } else { show = false; }          // none / dev / null
+  if (txt) txt.textContent = text;
+  pill.hidden = !show;
+  if (xbtn && !xbtn.hidden) xbtn.onclick = (e) => { e.stopPropagation(); window.chatbox.updateAction("ignore"); };
+  updateAboutUpdateStatus(s);
+}
+function updateAboutUpdateStatus(s) {
+  const el = document.getElementById("about-update-status"); if (!el) return;
+  const st = s && s.state, v = (s && s.version) ? (" " + s.version) : "";
+  el.textContent =
+    st === "checking" ? "正在检查…" :
+    st === "downloading" ? ("正在下载" + v + (s.percent != null ? " · " + s.percent + "%" : "…")) :
+    st === "ready" ? ("已下载" + v + "，点左上角即可重启更新") :
+    st === "error" ? "检查或下载失败，请稍后重试" :
+    (st === "none" && s.ignored) ? "已忽略此版本" :
+    st === "none" ? "已是最新版本" :
+    st === "dev" ? "开发模式不检查更新" : "";
 }
 if (window.chatbox && window.chatbox.onUpdateStatus) window.chatbox.onUpdateStatus(renderUpdatePill);
+{ const cu = document.getElementById("about-check-update");
+  if (cu) cu.onclick = async () => {
+    const st = document.getElementById("about-update-status"); if (st) st.textContent = "正在检查…";
+    try { const r = await window.chatbox.updateCheck(); if (r && r.state === "dev" && st) st.textContent = "开发模式不检查更新"; }
+    catch (e) { if (st) st.textContent = "检查失败"; }
+  };
+}
 setupMarked();
 setupHints();
 // Track the floating composer's height so messages stay padded above it and the
