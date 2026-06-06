@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("chatbox", {
   onQuickShortcutResult: (cb) => ipcRenderer.on("quick-shortcut-result", (_e, r) => cb(r)),
   pushQuickConfig: (cfg) => ipcRenderer.send("quick-config", cfg),
   exportConversation: (payload) => ipcRenderer.invoke("export-conversation", payload),
+  exportData: (json) => ipcRenderer.invoke("data-export", json),
+  importData: () => ipcRenderer.invoke("data-import"),
   getSeedConfig: () => ipcRenderer.invoke("seed-config"),
   getAppInfo: () => ipcRenderer.invoke("app-info"),
   onUpdateStatus: (cb) => ipcRenderer.on("update-status", (_e, s) => cb(s)),

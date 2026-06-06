@@ -2046,7 +2046,51 @@ function switchSection(sec) {
     const om = document.getElementById("set-openmain-shortcut");
     if (om) om.textContent = fmtAccel(state.settings.quick.openMainShortcut || "Alt+Cmd+Space");
   }
+  if (sec === "data") fillDataStats();
   if (sec === "about") fillAbout();
+}
+
+// ----- Data backup / restore -----
+function fillDataStats() {
+  const el = document.getElementById("data-stats"); if (!el) return;
+  const c = (state.conversations || []).length, a = (state.archived || []).length;
+  const keyed = PROVIDER_ORDER.filter(pk => state.settings.providers[pk] && state.settings.providers[pk].key).length;
+  const p = (state.settings.prompts || []).length, m = (state.settings.models || []).length;
+  el.textContent = `当前：${c} 个对话 · ${a} 个已归档 · ${m} 个模型 · ${p} 套提示词 · ${keyed} 个已配置 Key 的服务商。`;
+}
+async function exportAllData() {
+  if (!window.chatbox || !window.chatbox.exportData) { toast("导出不可用"); return; }
+  const bundle = { app: "Quartz", kind: "quartz-backup", schema: 1, exportedAt: new Date().toISOString(), state };
+  try {
+    const res = await window.chatbox.exportData(JSON.stringify(bundle, null, 2));
+    if (res && res.ok) toast("已导出到：" + res.path);
+    else if (res && res.canceled) { /* user cancelled */ }
+    else toast("导出失败：" + ((res && res.error) || "未知错误"));
+  } catch (e) { toast("导出失败：" + e.message); }
+}
+async function importAllData() {
+  if (!window.chatbox || !window.chatbox.importData) { toast("导入不可用"); return; }
+  let res;
+  try { res = await window.chatbox.importData(); } catch (e) { toast("导入失败：" + e.message); return; }
+  if (!res || res.canceled) return;
+  if (!res.ok) { toast("导入失败：" + (res.error || "未知错误")); return; }
+  let data; try { data = JSON.parse(res.json); } catch (e) { toast("文件不是有效的 JSON"); return; }
+  // Accept either a wrapped backup ({app,kind,state}) or a bare state object.
+  const incoming = (data && data.state && data.state.settings) ? data.state : (data && data.settings ? data : null);
+  if (!incoming || !incoming.settings || !incoming.settings.providers) { toast("不是有效的 Quartz 备份文件"); return; }
+  const nConv = (incoming.conversations || []).length, nArch = (incoming.archived || []).length;
+  const ok = await confirmDialog({
+    title: "导入数据",
+    body: `将导入 ${nConv} 个对话、${nArch} 个已归档，并覆盖当前的全部对话与设置（含 API Key）。此操作不可撤销，确定继续？`,
+    okText: "覆盖并导入", danger: true,
+  });
+  if (!ok) return;
+  try {
+    const ns = ensureShape(incoming);
+    await persist(ns);
+    toast("导入成功，正在重新加载…");
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast("导入失败：" + e.message); }
 }
 // The quick-bar model picker: a "follow default" option plus every enabled model.
 function populateQuickModelSelect() {
@@ -2612,6 +2656,8 @@ window.addEventListener("resize", updateConvListFade);
 document.getElementById("open-settings").onclick = () => openSettings();
 document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "modal-bg") closeSettings(); };
 document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.onclick = () => switchSection(b.dataset.sec));
+{ const de = document.getElementById("data-export"); if (de) de.onclick = exportAllData;
+  const di = document.getElementById("data-import"); if (di) di.onclick = importAllData; }
 setupSettingsLive();
 // custom confirm dialog
 document.getElementById("cf-ok").onclick = () => closeConfirm(true);

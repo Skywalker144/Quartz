@@ -737,3 +737,8 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .settings-group .row { display: flex; gap: 14px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
 .settings-group .row:last-child { border-bottom: none; }
 .settings-group .row .field { padding: 0; border: none; flex: 1; }
+
+/* Data backup section */
+.data-actions { display: flex; gap: 10px; margin: 4px 0 16px; flex-wrap: wrap; }
+.data-warn { opacity: .82; }
+.data-warn strong { font-weight: 700; color: var(--text); }

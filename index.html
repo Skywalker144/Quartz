@@ -127,6 +127,7 @@
         <button class="nav-item" data-sec="defaults">默认模型</button>
         <button class="nav-item" data-sec="quick">快速提问</button>
         <button class="nav-item" data-sec="shortcuts">快捷键</button>
+        <button class="nav-item" data-sec="data">数据</button>
         <button class="nav-item" data-sec="about">关于</button>
       </nav>
       <div id="modal-body">
@@ -385,6 +386,18 @@
                 <div class="field-hint">在任何应用里按下即可唤起 Quartz 主窗口并聚焦输入框。</div>
               </div>
             </div>
+          </section>
+
+          <!-- Data / backup -->
+          <section data-sec="data" class="hidden">
+            <h3>数据备份与迁移</h3>
+            <p class="sec-desc">把全部对话、已归档、系统提示词、模型与 API Key 导出为一个 JSON 文件；换电脑或重装后，一键导入即可完整恢复。</p>
+            <div class="data-actions">
+              <button class="btn" id="data-export">导出全部数据…</button>
+              <button class="btn" id="data-import">从文件导入…</button>
+            </div>
+            <p class="sec-desc" id="data-stats"></p>
+            <p class="sec-desc data-warn">⚠️ 导出文件包含你的 API Key，请妥善保管、不要随意分享。导入会<strong>覆盖</strong>当前的全部对话与设置。</p>
           </section>
 
           <!-- About -->

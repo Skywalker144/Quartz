@@ -237,6 +237,33 @@ function seedConfig() {
 }
 ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
+
+// Full data backup: write the whole app-state blob (conversations + settings + keys) to a file the user picks.
+ipcMain.handle("data-export", async (_e, json) => {
+  try {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const r = await dialog.showSaveDialog(mainWindow, {
+      title: "导出 Quartz 数据",
+      defaultPath: `Quartz-备份-${stamp}.json`,
+      filters: [{ name: "Quartz 备份", extensions: ["json"] }],
+    });
+    if (r.canceled || !r.filePath) return { canceled: true };
+    fs.writeFileSync(r.filePath, json, "utf8");
+    return { ok: true, path: r.filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// Restore from a backup file: read it and hand the raw JSON text back to the renderer to validate + apply.
+ipcMain.handle("data-import", async () => {
+  try {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: "导入 Quartz 数据",
+      properties: ["openFile"],
+      filters: [{ name: "Quartz 备份", extensions: ["json"] }],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { canceled: true };
+    return { ok: true, json: fs.readFileSync(r.filePaths[0], "utf8") };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 // Keep the Windows/Linux window-controls overlay colours in sync with the app theme.
 ipcMain.on("set-titlebar-overlay", (_e, o) => {
   if (process.platform === "darwin" || !mainWindow || mainWindow.isDestroyed() || !mainWindow.setTitleBarOverlay) return;
