@@ -28,6 +28,7 @@ for a in "$@"; do
   esac
 done
 VERSION=$(node -p "require('./package.json').version")
+PRODUCT=$(node -p "(require('./package.json').build && require('./package.json').build.productName) || require('./package.json').productName || require('./package.json').name")
 
 # Windows zip on Apple Silicon: electron-builder runs rcedit through a bundled (x86) wine to
 # stamp exe metadata. Without Rosetta 2 that step fails, but the app is still fully packaged —
@@ -35,8 +36,8 @@ VERSION=$(node -p "require('./package.json').version")
 # To get clean Windows builds, run:  softwareupdate --install-rosetta --agree-to-license
 build_win() {
   npx electron-builder --win zip --x64 $PUBLISH || echo "⚠ electron-builder win step failed (rcedit/wine) — falling back to manual zip"
-  if [ -f dist/win-unpacked/ChatBox.exe ] && ! ls dist/ChatBox-*-win*.zip >/dev/null 2>&1; then
-    ( cd dist && rm -rf ChatBox && cp -R win-unpacked ChatBox && zip -rqy "ChatBox-${VERSION}-win-x64.zip" ChatBox && rm -rf ChatBox )
+  if [ -f "dist/win-unpacked/${PRODUCT}.exe" ] && ! ls dist/${PRODUCT}-*-win*.zip >/dev/null 2>&1; then
+    ( cd dist && rm -rf "${PRODUCT}" && cp -R win-unpacked "${PRODUCT}" && zip -rqy "${PRODUCT}-${VERSION}-win-x64.zip" "${PRODUCT}" && rm -rf "${PRODUCT}" )
     echo "✅ portable Windows zip created (manual fallback)"
   fi
 }
