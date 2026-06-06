@@ -1,7 +1,7 @@
 {
   "name": "quartz",
   "productName": "Quartz",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "A simple, fast Quartz desktop app powered by OpenRouter",
   "author": "Sky Cheng",
   "license": "MIT",
