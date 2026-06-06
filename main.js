@@ -271,11 +271,9 @@ function seedConfig() {
 ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
 
-// Encrypt/decrypt API keys at rest via the OS keychain (macOS Keychain / Windows DPAPI / libsecret).
-ipcMain.handle("encrypt-secret", (_e, plain) => {
-  try { return (plain && safeStorage.isEncryptionAvailable()) ? safeStorage.encryptString(String(plain)).toString("base64") : null; }
-  catch (e) { return null; }
-});
+// One-time: decrypt API keys that a brief earlier build stored via the OS keychain, so the renderer
+// can convert them back to plaintext. (Key encryption was removed — it popped a keychain prompt on
+// every ad-hoc update, which other desktop chat apps don't do.)
 ipcMain.handle("decrypt-secret", (_e, b64) => {
   try { return b64 ? safeStorage.decryptString(Buffer.from(String(b64), "base64")) : null; }
   catch (e) { return null; }

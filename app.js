@@ -172,36 +172,24 @@ function freshState() {
   };
 }
 
-// API keys are encrypted AT REST via the OS keychain (safeStorage, in the main process). They live
-// in plaintext only in memory; on disk each key is stored as "qzenc1:<base64>". We decrypt on load
-// and encrypt on save. Legacy plaintext keys upgrade transparently on the next save. If encryption
-// is unavailable (e.g. Linux without a secret service), keys gracefully stay plaintext.
+// API keys are stored in PLAINTEXT (like other desktop chat apps) — no keychain prompts. Installs that
+// briefly used the encrypted format ("qzenc1:") are converted back: decrypt those keys once on load
+// (a final, one-time keychain unlock) and immediately re-save as plaintext, after which the keychain
+// is never touched again. Returns true when it converted something, so the caller can flush to disk.
 const ENC_PREFIX = "qzenc1:";
-async function decryptKeysInPlace(s) {
-  if (!window.chatbox || !window.chatbox.decryptSecret) return s;
-  const ps = s && s.settings && s.settings.providers; if (!ps) return s;
+async function decryptLegacyKeys(s) {
+  const ps = s && s.settings && s.settings.providers; if (!ps) return false;
+  let converted = false;
   for (const pk of Object.keys(ps)) {
     const k = ps[pk] && ps[pk].key;
     if (typeof k === "string" && k.startsWith(ENC_PREFIX)) {
-      let dec = null; try { dec = await window.chatbox.decryptSecret(k.slice(ENC_PREFIX.length)); } catch (e) {}
-      ps[pk].key = (dec != null) ? dec : "";   // undecryptable (e.g. moved machines) → require re-entry
+      let dec = null;
+      try { dec = (window.chatbox && window.chatbox.decryptSecret) ? await window.chatbox.decryptSecret(k.slice(ENC_PREFIX.length)) : null; } catch (e) {}
+      ps[pk].key = (dec != null) ? dec : "";
+      converted = true;
     }
   }
-  return s;
-}
-// Shallow clone with provider keys encrypted (conversations/archived are shared, never deep-copied).
-async function encryptedClone(s) {
-  if (!window.chatbox || !window.chatbox.encryptSecret) return s;
-  const ps = s && s.settings && s.settings.providers; if (!ps) return s;
-  const out = {}; let changed = false;
-  for (const pk of Object.keys(ps)) {
-    const p = ps[pk], k = p && p.key;
-    if (typeof k === "string" && k && !k.startsWith(ENC_PREFIX)) {
-      let enc = null; try { enc = await window.chatbox.encryptSecret(k); } catch (e) {}
-      out[pk] = Object.assign({}, p, { key: enc ? ENC_PREFIX + enc : k }); changed = true;
-    } else out[pk] = p;
-  }
-  return changed ? Object.assign({}, s, { settings: Object.assign({}, s.settings, { providers: out }) }) : s;
+  return converted;
 }
 
 /* Storage is split: a small "meta" record (settings + the ordered lists of conversation ids +
@@ -239,14 +227,18 @@ async function loadState() {
     _metaSig = "";
     const s = Object.assign({}, meta, { conversations: convs, archived: arch });
     delete s.order; delete s.archivedOrder; delete s._split;
-    return ensureShape(await decryptKeysInPlace(s));
+    const converted = await decryptLegacyKeys(s);
+    const ns = ensureShape(s);
+    if (converted) await persist(ns);   // rewrite the keys as plaintext so the keychain is never touched again
+    return ns;
   }
   // Migrate a legacy single blob (IndexedDB "state", else localStorage) into the split format.
   let blob = null;
   try { blob = await idbGet(IDB_STATE_KEY); } catch (e) { console.warn("idb read failed", e); }
   if (!(blob && blob.settings && blob.settings.providers)) { const ls = readJSON(LS_KEY); if (ls && ls.settings && ls.settings.providers) blob = ls; }
   if (blob && blob.settings && blob.settings.providers) {
-    const ns = ensureShape(await decryptKeysInPlace(blob));
+    await decryptLegacyKeys(blob);
+    const ns = ensureShape(blob);
     _convSig = Object.create(null); _metaSig = "";        // force a full split write; old "state" stays as a frozen backup
     await persist(ns);
     return ns;
@@ -256,12 +248,12 @@ async function loadState() {
   return freshState();
 }
 // Incremental save: write meta (only when it changed) + just the changed conversations, and drop
-// records for deleted ones. API keys in meta are encrypted at rest. Falls back to a single blob.
+// records for deleted ones. Falls back to a single localStorage blob if IndexedDB is unavailable.
 async function persist(s) {
   try {
     const ops = [];
-    const metaSig = JSON.stringify(metaOf(s));            // plaintext + deterministic → reliable change check
-    if (metaSig !== _metaSig) ops.push(idbSet(META_KEY, metaOf(await encryptedClone(s))).then(() => { _metaSig = metaSig; }));
+    const metaSig = JSON.stringify(metaOf(s));            // deterministic → reliable change check
+    if (metaSig !== _metaSig) ops.push(idbSet(META_KEY, metaOf(s)).then(() => { _metaSig = metaSig; }));
     const present = new Set();
     for (const c of (s.conversations || []).concat(s.archived || [])) {
       present.add(c.id);
@@ -273,7 +265,7 @@ async function persist(s) {
     return true;
   } catch (e) {
     console.warn("idb split write failed, trying localStorage blob", e);
-    try { localStorage.setItem(LS_KEY, JSON.stringify(await encryptedClone(s))); return true; }
+    try { localStorage.setItem(LS_KEY, JSON.stringify(s)); return true; }
     catch (e2) { console.warn("save failed", e2); toast("⚠️ 保存失败：存储空间不足或不可用。可删除部分旧对话/附件后重试。"); return false; }
   }
 }

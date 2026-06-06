@@ -8,6 +8,7 @@
   --accent: #f2f2f2;
   --accent-text: #1c1c1c;
   --accent-soft: #363636;
+  --seg-on: #3d3d3d;          /* selected segment: a subtly raised surface, not a stark white block */
   --user-bubble: #2c2c2c;
   --danger: #e06666;
   --radius: 12px;
@@ -37,6 +38,7 @@
   --accent: #141414;
   --accent-text: #ffffff;
   --accent-soft: #ececec;
+  --seg-on: #ffffff;
   --user-bubble: #f0f0f0;
   --danger: #c0392b;
   /* code syntax (muted, no blue) — light */
@@ -693,7 +695,7 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .seg { display: inline-flex; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 9px; padding: 2px; gap: 2px; }
 .seg button { border: none; background: transparent; color: var(--text-dim); font-size: 13px; padding: 6px 14px; border-radius: 7px; cursor: pointer; font-weight: 500; transition: background .15s, color .15s; }
 .seg button:hover { color: var(--text); }
-.seg button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.seg button.on { background: var(--seg-on); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.22); }
 
 /* ---- appearance live preview ---- */
 .set-preview { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); }
