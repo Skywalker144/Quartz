@@ -2,7 +2,7 @@
 
 # Quartz
 
-**A fast, minimal, monochrome desktop AI chat app.**
+**简洁、快速、黑白极简的桌面 AI 对话应用。**
 
 [![Release](https://img.shields.io/github/v/release/Skywalker144/Quartz?color=111&label=release)](https://github.com/Skywalker144/Quartz/releases)
 [![License](https://img.shields.io/badge/license-MIT-111)](LICENSE)
@@ -10,111 +10,107 @@
 
 </div>
 
-Quartz is a clean, keyboard-first desktop client for chatting with frontier LLMs through
-**OpenRouter, OpenAI, Anthropic, DeepSeek, and Google** — with a global Option+Space quick-ask,
-one-click export, in-chat search, and a sharp black-and-white design.
-
-> The app interface is in **Simplified Chinese (简体中文)**.
+Quartz 是一个以键盘为先、黑白极简的桌面 LLM 客户端，支持
+**OpenRouter / OpenAI / Anthropic / DeepSeek / Google**，内置全局 Option+Space 速答、一键导出、对话内搜索。
 
 ---
 
-## Features
+## 功能
 
-- **Multi-provider** — OpenRouter / OpenAI / Anthropic / DeepSeek / Google, switch models per conversation. One-click "suggested model" chips make setup painless; entering a DeepSeek key auto-configures its models.
-- **Global quick-ask (⌥Space)** — a Spotlight-style bar that pops up anywhere: type, hit Enter, get a concise streamed answer. Press Enter again (or the button) to continue the thread inside Quartz; ⌘C copies the answer.
-- **Export** — save any conversation as **Markdown, PDF, or PNG** (or copy as Markdown), with KaTeX math and code blocks preserved.
-- **In-chat search (⌘F)** — search across conversations *and* highlight every match in the open one, with ↑/↓ traversal.
-- **System-prompt library** — keep multiple prompts, switch per conversation; ships with a strong "expert" default.
-- **Reasoning · web search · context compaction** — toggle deep-thinking effort, web search (OpenRouter), or summarize older turns to save context.
-- **Answer versions** — regenerate or edit-and-resend, then flip between answers.
-- **Node-map navigator** — a mini map of the conversation for quick jumps.
-- **Auto-title, delete-with-undo, archive** — tidy, forgiving conversation management.
-- **Monochrome UI** — light/dark (follows system), adjustable font/size/density/width, squircle corners.
-- **Auto-update** notifications from GitHub Releases.
+- **多家模型** —— OpenRouter / OpenAI / Anthropic / DeepSeek / Google，可按对话切换模型。「推荐模型」一点即加；填入 DeepSeek Key 会自动配好它的模型。
+- **全局速答（⌥Space）** —— 类似 Spotlight 的浮条，随处呼出：输入、回车，得到简洁的流式回答；再回车（或点按钮）即可把这轮对话带进 Quartz 继续，⌘C 直接复制答案。
+- **导出** —— 把任意对话存为 **Markdown / PDF / PNG**（或复制为 Markdown），保留 KaTeX 公式和代码块。
+- **对话内搜索（⌘F）** —— 既搜所有对话，又在当前对话里**高亮每一处命中**，支持 ↑/↓ 遍历。
+- **系统提示词库** —— 多套提示词按对话切换；内置一套犀利的「专家」默认提示。
+- **推理 · 联网 · 上下文压缩** —— 可切换深度思考强度、联网搜索（OpenRouter），或压缩较早的对话以省上下文。
+- **回答版本** —— 重新生成、或编辑后重发，并在多个答案间切换。
+- **节点导航图** —— 对话的迷你地图，快速跳转。
+- **自动命名 · 删除可撤销 · 归档** —— 干净又不怕误删的对话管理。
+- **黑白界面** —— 浅色/深色（跟随系统）、字体/字号/密度/正文宽度可调、G2 squircle 圆角。
+- **自动更新** —— 从 GitHub Releases 检查新版本。
 
 ---
 
-## Download
+## 下载
 
-Get the latest build from the [**Releases**](https://github.com/Skywalker144/Quartz/releases) page.
+到 [**Releases**](https://github.com/Skywalker144/Quartz/releases) 页拿最新版。
 
-| Platform | File | Notes |
+| 平台 | 文件 | 说明 |
 |---|---|---|
-| **macOS** (Apple Silicon) | `Quartz-<ver>-arm64.dmg` | Open the dmg, drag **Quartz** to Applications. |
-| **Windows** (x64) | `Quartz-<ver>-win-x64.zip` | Unzip, run `Quartz.exe` (portable, no installer). |
+| **macOS**（Apple Silicon） | `Quartz-<版本>-arm64.dmg` | 打开 dmg，把 **Quartz** 拖进「应用程序」。 |
+| **Windows**（x64） | `Quartz-<版本>-win-x64.zip` | 解压后运行 `Quartz.exe`（便携版，无需安装）。 |
 
-The app is **not commercially code-signed**, so on first launch:
-- **macOS** — if you see "cannot verify the developer", right-click the app → **Open** once.
-- **Windows** — if SmartScreen warns, click **More info → Run anyway**.
-
----
-
-## Setup
-
-1. Open **Settings** (`⌘,` / `Ctrl+,`) → **模型提供方 (Providers)** and paste an API key for any provider.
-2. In **管理模型 (Manage Models)**, click the suggested-model chips to enable the ones you want, then set your defaults under **默认模型 (Defaults)**.
-3. **DeepSeek** is plug-and-play: pasting its key auto-adds `deepseek-v4-pro` / `deepseek-v4-flash` and sets them as the chat / title models.
+应用**未做商业代码签名**，所以首次打开时：
+- **macOS** —— 若提示「无法验证开发者」，右键图标 →「**打开**」一次即可。
+- **Windows** —— 若 SmartScreen 拦截，点「**更多信息 → 仍要运行**」。
 
 ---
 
-## Keyboard shortcuts
+## 配置
 
-> On Windows/Linux, `⌘` → `Ctrl`.
+1. 打开**设置**（`⌘,` / `Ctrl+,`）→ **模型提供方**，填入任意一家的 API Key。
+2. 到**管理模型**点「推荐模型」的标签启用你要的模型，再到**默认模型**设好默认。
+3. **DeepSeek** 即插即用：填入 Key 会自动加上 `deepseek-v4-pro` / `deepseek-v4-flash`，并设为对话 / 命名模型。
 
-| Shortcut | Action |
+---
+
+## 快捷键
+
+> Windows/Linux 上 `⌘` → `Ctrl`。
+
+| 快捷键 | 功能 |
 |---|---|
-| `⌥Space` | Quick-ask bar (global) |
-| `⌥⌘Space` | Open & focus Quartz (global) |
-| `⌘N` | New conversation |
-| `⌘L` | Focus the input box |
-| `⌘F` | Search conversations |
-| `⌘,` | Settings |
-| `Enter` / `Shift+Enter` | Send / newline |
+| `⌥Space` | 速答浮条（全局） |
+| `⌥⌘Space` | 唤起并聚焦 Quartz（全局） |
+| `⌘N` | 新对话 |
+| `⌘L` | 聚焦输入框 |
+| `⌘F` | 搜索对话 |
+| `⌘,` | 设置 |
+| `Enter` / `Shift+Enter` | 发送 / 换行 |
 
-All global shortcuts are configurable under **Settings → 快捷键**.
+两个全局快捷键都可在**设置 → 快捷键**里改。
 
 ---
 
-## Build from source
+## 从源码构建
 
-Requires **Node.js 18+**.
+需要 **Node.js 18+**。
 
 ```bash
 git clone https://github.com/Skywalker144/Quartz.git
 cd Quartz
 npm install
-npm start          # run in dev
+npm start          # 开发运行
 ```
 
-Package distributables (macOS arm64 dmg+zip, Windows x64 portable zip):
+打包（macOS arm64 的 dmg+zip、Windows x64 便携 zip）：
 
 ```bash
-./build.sh mac     # or: win | all
+./build.sh mac     # 或：win | all
 ```
 
-Maintainer build/release details (mirrors, Rosetta, signing, publishing) are in [RELEASE.md](RELEASE.md).
-For a native Windows installer (`.exe`, with auto-update), build on a Windows PC — see [BUILD-WINDOWS.md](BUILD-WINDOWS.md).
+构建/发布的细节（镜像、Rosetta、签名、发版）见 [RELEASE.md](RELEASE.md)。
+要出 Windows 原生安装包（`.exe`，且支持自动更新），需在 Windows 电脑上构建 —— 见 [BUILD-WINDOWS.md](BUILD-WINDOWS.md)。
 
 ---
 
-## Shipping a pre-configured build to a friend
+## 给朋友发一个「开箱即用」的版本
 
-You can bundle an API key + default model so a recipient can use Quartz without any setup — copy
-[`.env.example`](.env.example) to `.env`, fill it in, then `./build.sh`.
+你可以把 API Key + 默认模型打进安装包，让对方无需配置直接用 —— 复制
+[`.env.example`](.env.example) 为 `.env`，填好后 `./build.sh` 即可。
 
-> ⚠️ **A bundled key is extractable** from the app bundle. Only ship a **dedicated, low-limit** key,
-> revoke it afterward, and **never** commit `.env` or put your key in a public release. The public
-> releases here contain **no** key.
+> ⚠️ **打进包里的 Key 是可被提取的**。请只用一把**专用、设了额度上限**的 Key，用完即作废，
+> 且**绝不要**提交 `.env`、也**绝不要**把带 Key 的包传到公开 Release。本仓库的公开 Release **不含**任何 Key。
 
 ---
 
-## Tech
+## 技术
 
-Electron · vanilla JS (no framework) · IndexedDB for storage · vendored
-[marked](https://github.com/markedjs/marked), [KaTeX](https://katex.org/),
-[highlight.js](https://highlightjs.org/), and [DOMPurify](https://github.com/cure53/DOMPurify).
-Auto-update via [electron-updater](https://www.electron.build/auto-update).
+Electron · 原生 JS（无框架）· IndexedDB 存储 · 内置
+[marked](https://github.com/markedjs/marked)、[KaTeX](https://katex.org/)、
+[highlight.js](https://highlightjs.org/)、[DOMPurify](https://github.com/cure53/DOMPurify)。
+自动更新用 [electron-updater](https://www.electron.build/auto-update)。
 
 ## License
 
-[MIT](LICENSE) © 2026 steve.tu
+[MIT](LICENSE) © 2026 Sky Cheng
