@@ -9,6 +9,12 @@ try { autoUpdater = require("electron-updater").autoUpdater; } catch (e) { /* de
 // survive (userData defaults to productName, which changed). Must run before app is ready.
 try { app.setPath("userData", path.join(app.getPath("appData"), "ChatBox")); } catch (e) {}
 
+// Chromium otherwise encrypts its own cookie/session storage with an OS-keychain key
+// ("Quartz Safe Storage"); on an ad-hoc-signed app whose signature changes every update, that pops a
+// keychain prompt on each launch after an update. Use the basic store (no keychain), like other
+// desktop chat apps — our own API keys are stored as plaintext in IndexedDB, not via the keychain.
+app.commandLine.appendSwitch("password-store", "basic");
+
 let mainWindow = null;
 let quickWindow = null;
 // Config (provider keys, default model, theme, system prompt, shortcut, …) pushed up from
@@ -127,6 +133,15 @@ function showMainFocus() {
   else focus();
 }
 
+// Creating/showing the 'panel'-type quick bar demotes the app to an accessory (UIElement) on macOS,
+// which strips the Dock running-dot and menu-bar ownership. Re-assert a normal foreground app after
+// every quick-window create/show so it never gets stuck as an accessory.
+function ensureForeground() {
+  if (process.platform === "darwin" && app.setActivationPolicy) {
+    try { app.setActivationPolicy("regular"); } catch (e) {}
+  }
+}
+
 /* ===================== Quick-ask bar (Option+Space) ===================== */
 function createQuickWindow() {
   quickWindow = new BrowserWindow({
@@ -170,6 +185,7 @@ function createQuickWindow() {
     return { action: "deny" };
   });
   quickWindow.on("closed", () => { quickWindow = null; });
+  ensureForeground();   // the panel just demoted us to an accessory — undo it
 }
 
 function showQuick() {
@@ -187,6 +203,7 @@ function showQuick() {
   quickWindow.show();
   quickWindow.focus();
   quickWindow.webContents.send("quick-focus", quickConfig);
+  ensureForeground();   // showing the panel can re-demote us — keep the Dock dot + menu bar
 }
 
 function hideQuick() {
@@ -590,9 +607,7 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
   createQuickWindow();   // created hidden; first Option+Space is then instant
-  // Creating the 'panel'-type quick bar demotes the app to an accessory (UIElement) on macOS —
-  // which strips the Dock running-dot and the menu bar. Force a normal foreground app back.
-  if (process.platform === "darwin") { try { app.setActivationPolicy("regular"); } catch (e) {} }
+  ensureForeground();    // (createQuickWindow already re-asserts this; explicit at startup too)
 
   // Register the default shortcuts now; the app reconciles them with the persisted settings
   // as soon as it boots and pushes its config up.
