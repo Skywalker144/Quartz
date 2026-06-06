@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, globalShortcut, ipcMain, screen, dialog } = require("electron");
+const { app, BrowserWindow, Menu, shell, globalShortcut, ipcMain, screen, dialog, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -28,11 +28,36 @@ function sendMenu(action) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("menu", action);
 }
 
+// Remember the main window's size/position across launches.
+function winStateFile() { return path.join(app.getPath("userData"), "window-state.json"); }
+function loadWinState() {
+  try { const s = JSON.parse(fs.readFileSync(winStateFile(), "utf8"));
+    if (s && Number.isFinite(s.width) && Number.isFinite(s.height)) return s; } catch (e) {}
+  return null;
+}
+function boundsVisible(b) {   // is the window's title bar on some currently-connected display?
+  if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.y)) return false;
+  return screen.getAllDisplays().some(d => {
+    const w = d.workArea;
+    return b.x + b.width > w.x + 80 && b.x < w.x + w.width - 80 && b.y >= w.y - 4 && b.y < w.y + w.height - 40;
+  });
+}
+let _winSaveT = null;
+function saveWinState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const max = mainWindow.isMaximized();
+    const b = mainWindow.getNormalBounds ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+    fs.writeFileSync(winStateFile(), JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: max }));
+  } catch (e) {}
+}
+
 function createWindow() {
   const isMac = process.platform === "darwin";
+  const saved = loadWinState();
   const opts = {
-    width: 1100,
-    height: 760,
+    width: (saved && saved.width) || 1100,
+    height: (saved && saved.height) || 760,
     minWidth: 720,
     minHeight: 480,
     title: "Quartz",
@@ -52,9 +77,17 @@ function createWindow() {
     opts.titleBarStyle = "hidden";
     opts.titleBarOverlay = { color: "#1c1c1c", symbolColor: "#d3d3d3", height: 60 };
   }
+  if (saved && boundsVisible(saved)) { opts.x = saved.x; opts.y = saved.y; }
   mainWindow = new BrowserWindow(opts);
+  if (saved && saved.maximized) mainWindow.maximize();
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
+
+  // Persist size/position (debounced) so the window reopens where you left it.
+  const scheduleWinSave = () => { clearTimeout(_winSaveT); _winSaveT = setTimeout(saveWinState, 400); };
+  mainWindow.on("resize", scheduleWinSave);
+  mainWindow.on("move", scheduleWinSave);
+  mainWindow.on("close", saveWinState);
 
   // Open external (http/https) links in the user's default browser,
   // not inside the app window.
@@ -237,6 +270,16 @@ function seedConfig() {
 }
 ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
+
+// Encrypt/decrypt API keys at rest via the OS keychain (macOS Keychain / Windows DPAPI / libsecret).
+ipcMain.handle("encrypt-secret", (_e, plain) => {
+  try { return (plain && safeStorage.isEncryptionAvailable()) ? safeStorage.encryptString(String(plain)).toString("base64") : null; }
+  catch (e) { return null; }
+});
+ipcMain.handle("decrypt-secret", (_e, b64) => {
+  try { return b64 ? safeStorage.decryptString(Buffer.from(String(b64), "base64")) : null; }
+  catch (e) { return null; }
+});
 
 // Full data backup: write the whole app-state blob (conversations + settings + keys) to a file the user picks.
 ipcMain.handle("data-export", async (_e, json) => {

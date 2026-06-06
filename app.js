@@ -159,25 +159,58 @@ function freshState() {
   };
 }
 
+// API keys are encrypted AT REST via the OS keychain (safeStorage, in the main process). They live
+// in plaintext only in memory; on disk each key is stored as "qzenc1:<base64>". We decrypt on load
+// and encrypt on save. Legacy plaintext keys upgrade transparently on the next save. If encryption
+// is unavailable (e.g. Linux without a secret service), keys gracefully stay plaintext.
+const ENC_PREFIX = "qzenc1:";
+async function decryptKeysInPlace(s) {
+  if (!window.chatbox || !window.chatbox.decryptSecret) return s;
+  const ps = s && s.settings && s.settings.providers; if (!ps) return s;
+  for (const pk of Object.keys(ps)) {
+    const k = ps[pk] && ps[pk].key;
+    if (typeof k === "string" && k.startsWith(ENC_PREFIX)) {
+      let dec = null; try { dec = await window.chatbox.decryptSecret(k.slice(ENC_PREFIX.length)); } catch (e) {}
+      ps[pk].key = (dec != null) ? dec : "";   // undecryptable (e.g. moved machines) → require re-entry
+    }
+  }
+  return s;
+}
+// Shallow clone with provider keys encrypted (conversations/archived are shared, never deep-copied).
+async function encryptedClone(s) {
+  if (!window.chatbox || !window.chatbox.encryptSecret) return s;
+  const ps = s && s.settings && s.settings.providers; if (!ps) return s;
+  const out = {}; let changed = false;
+  for (const pk of Object.keys(ps)) {
+    const p = ps[pk], k = p && p.key;
+    if (typeof k === "string" && k && !k.startsWith(ENC_PREFIX)) {
+      let enc = null; try { enc = await window.chatbox.encryptSecret(k); } catch (e) {}
+      out[pk] = Object.assign({}, p, { key: enc ? ENC_PREFIX + enc : k }); changed = true;
+    } else out[pk] = p;
+  }
+  return changed ? Object.assign({}, s, { settings: Object.assign({}, s.settings, { providers: out }) }) : s;
+}
+
 async function loadState() {
   // Primary store: IndexedDB.
   let s = null;
   try { s = await idbGet(IDB_STATE_KEY); } catch (e) { console.warn("idb read failed", e); }
-  if (s && s.settings && s.settings.providers) return ensureShape(s);
+  if (s && s.settings && s.settings.providers) return ensureShape(await decryptKeysInPlace(s));
 
   // One-time migration from the old localStorage blobs (kept intact afterwards as a backup).
   const ls = readJSON(LS_KEY);
-  if (ls && ls.settings && ls.settings.providers) { const ns = ensureShape(ls); await persist(ns); return ns; }
+  if (ls && ls.settings && ls.settings.providers) { const ns = ensureShape(await decryptKeysInPlace(ls)); await persist(ns); return ns; }
   const old = readJSON(OLD_KEY);
   if (old && old.settings) { const ns = migrate(old); await persist(ns); return ns; }
   return freshState();
 }
-// Write the whole state blob to IndexedDB, falling back to localStorage if IDB is unavailable.
+// Write the whole state blob to IndexedDB (API keys encrypted at rest), falling back to localStorage.
 async function persist(s) {
-  try { await idbSet(IDB_STATE_KEY, s); return true; }
+  const toSave = await encryptedClone(s);
+  try { await idbSet(IDB_STATE_KEY, toSave); return true; }
   catch (e) {
     console.warn("idb write failed, trying localStorage", e);
-    try { localStorage.setItem(LS_KEY, JSON.stringify(s)); return true; }
+    try { localStorage.setItem(LS_KEY, JSON.stringify(toSave)); return true; }
     catch (e2) { console.warn("save failed", e2); toast("⚠️ 保存失败：存储空间不足或不可用。可删除部分旧对话/附件后重试。"); return false; }
   }
 }

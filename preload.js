@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("chatbox", {
   exportConversation: (payload) => ipcRenderer.invoke("export-conversation", payload),
   exportData: (json) => ipcRenderer.invoke("data-export", json),
   importData: () => ipcRenderer.invoke("data-import"),
+  encryptSecret: (s) => ipcRenderer.invoke("encrypt-secret", s),
+  decryptSecret: (s) => ipcRenderer.invoke("decrypt-secret", s),
   getSeedConfig: () => ipcRenderer.invoke("seed-config"),
   getAppInfo: () => ipcRenderer.invoke("app-info"),
   onUpdateStatus: (cb) => ipcRenderer.on("update-status", (_e, s) => cb(s)),
