@@ -9,11 +9,13 @@ try { autoUpdater = require("electron-updater").autoUpdater; } catch (e) { /* de
 // survive (userData defaults to productName, which changed). Must run before app is ready.
 try { app.setPath("userData", path.join(app.getPath("appData"), "ChatBox")); } catch (e) {}
 
-// Chromium otherwise encrypts its own cookie/session storage with an OS-keychain key
-// ("Quartz Safe Storage"); on an ad-hoc-signed app whose signature changes every update, that pops a
-// keychain prompt on each launch after an update. Use the basic store (no keychain), like other
-// desktop chat apps — our own API keys are stored as plaintext in IndexedDB, not via the keychain.
-app.commandLine.appendSwitch("password-store", "basic");
+// Chromium encrypts its own cookie/session storage with an OS-keychain key ("Quartz Safe Storage").
+// On an ad-hoc-signed app whose code signature changes every update, that pops a keychain prompt on
+// each launch-after-update. Keep Chromium entirely out of the keychain. On macOS the right switch is
+// --use-mock-keychain (--password-store is a Linux-only no-op on mac); --password-store=basic covers
+// Linux. Our API keys live as plaintext in IndexedDB, not the keychain, so nothing is lost.
+if (process.platform === "darwin") app.commandLine.appendSwitch("use-mock-keychain");
+else app.commandLine.appendSwitch("password-store", "basic");
 
 let mainWindow = null;
 let quickWindow = null;
