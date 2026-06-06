@@ -432,8 +432,8 @@ function setupAutoUpdate() {
   autoUpdater.on("download-progress", (p) => { if (process.platform !== "darwin") uSend({ state: "downloading", percent: Math.round((p && p.percent) || 0) }); });
   autoUpdater.on("update-downloaded", (info) => { pendingUpdate = { version: info && info.version }; uSend({ state: "ready", version: info && info.version }); });
   autoUpdater.on("error", (e) => uSend({ state: "error", message: e && e.message }));
-  autoUpdater.checkForUpdates().catch(() => {});
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000);
+  autoUpdater.checkForUpdates().catch(() => {});                                   // on launch
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 24 * 60 * 60 * 1000);   // + once a day while running
 }
 ipcMain.handle("update-status-get", () => lastUpdate);
 ipcMain.handle("update-check", async () => {
@@ -590,6 +590,9 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
   createQuickWindow();   // created hidden; first Option+Space is then instant
+  // Creating the 'panel'-type quick bar demotes the app to an accessory (UIElement) on macOS —
+  // which strips the Dock running-dot and the menu bar. Force a normal foreground app back.
+  if (process.platform === "darwin") { try { app.setActivationPolicy("regular"); } catch (e) {} }
 
   // Register the default shortcuts now; the app reconciles them with the persisted settings
   // as soon as it boots and pushes its config up.
