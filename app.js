@@ -2950,6 +2950,23 @@ if (window.chatbox && window.chatbox.onUpdateStatus) window.chatbox.onUpdateStat
     catch (e) { if (st) st.textContent = "检查失败"; }
   };
 }
+
+// Auto-backup (data safety): a silent, rotating local snapshot WITHOUT API keys. Skipped when nothing
+// changed since the last one. Lives in userData/backups; the manual export (with keys) is separate.
+let _lastBackupSig = "";
+async function autoBackup() {
+  if (!window.chatbox || !window.chatbox.writeBackup || !state) return;
+  const sig = (state.conversations || []).length + "/" + (state.archived || []).length + "/" + JSON.stringify(state).length;
+  if (sig === _lastBackupSig) return;
+  const providers = {};
+  for (const pk of Object.keys(state.settings.providers)) providers[pk] = Object.assign({}, state.settings.providers[pk], { key: "" });
+  const safe = Object.assign({}, state, { settings: Object.assign({}, state.settings, { providers }) });
+  const bundle = { app: "Quartz", kind: "quartz-backup", schema: 1, auto: true, exportedAt: new Date().toISOString(), state: safe };
+  try { const r = await window.chatbox.writeBackup(JSON.stringify(bundle)); if (r && r.ok) _lastBackupSig = sig; } catch (e) {}
+}
+setTimeout(autoBackup, 10000);
+setInterval(autoBackup, 60 * 60 * 1000);
+{ const ob = document.getElementById("data-open-backups"); if (ob) ob.onclick = () => window.chatbox.openBackups && window.chatbox.openBackups(); }
 setupMarked();
 setupHints();
 // Track the floating composer's height so messages stay padded above it and the

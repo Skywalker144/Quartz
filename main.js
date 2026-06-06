@@ -307,6 +307,23 @@ ipcMain.handle("data-import", async () => {
     return { ok: true, json: fs.readFileSync(r.filePaths[0], "utf8") };
   } catch (e) { return { ok: false, error: e.message }; }
 });
+
+// Silent rotating auto-backups for data safety (the renderer strips API keys before sending).
+function backupsDir() { return path.join(app.getPath("userData"), "backups"); }
+ipcMain.handle("backup-write", (_e, json) => {
+  try {
+    const dir = backupsDir(); fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.writeFileSync(path.join(dir, `quartz-auto-${stamp}.json`), json, "utf8");
+    const files = fs.readdirSync(dir).filter(f => /^quartz-auto-.*\.json$/.test(f)).sort();
+    while (files.length > 8) { try { fs.unlinkSync(path.join(dir, files.shift())); } catch (e) {} }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle("open-backups", () => {
+  try { const d = backupsDir(); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); return { ok: true }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
 // Keep the Windows/Linux window-controls overlay colours in sync with the app theme.
 ipcMain.on("set-titlebar-overlay", (_e, o) => {
   if (process.platform === "darwin" || !mainWindow || mainWindow.isDestroyed() || !mainWindow.setTitleBarOverlay) return;
