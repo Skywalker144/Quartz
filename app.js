@@ -195,7 +195,7 @@ function freshState() {
         promptId: "daily-default", temp: 1, maxTokens: null,
       },
       sidebar: { width: 264, collapsed: false },
-      quick: { enabled: true, shortcut: "Alt+Space", model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: "Alt+Cmd+Space" },
+      quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       tempBumped: true,
     },
     conversations: [],
@@ -496,12 +496,12 @@ function quickConfigPayload() {
   return {
     providers, chat, theme: set.appearance.theme, system, temp: set.defaults.temp,
     enabled: q.enabled !== false,
-    shortcut: q.shortcut || "Alt+Space",
+    shortcut: q.shortcut || defaultQuick(),
     closeOnBlur: q.closeOnBlur !== false,
     width: q.width || 720,
     topPct: (q.topPct != null ? q.topPct : 18),
     openMainEnabled: q.openMainEnabled !== false,
-    openMainShortcut: q.openMainShortcut || "Alt+Cmd+Space",
+    openMainShortcut: q.openMainShortcut || defaultOpenMain(),
   };
 }
 function pushQuickConfig() {
@@ -524,7 +524,22 @@ function hasModel(r) { return state.settings.models.some(m => modelsEqual(m, r))
 function addModel(r) { if (!hasModel(r)) { state.settings.models.push({ provider: r.provider, model: r.model }); save(); } }
 function removeModel(r) { state.settings.models = state.settings.models.filter(m => !modelsEqual(m, r)); save(); }
 function enabledModel(ref) { return state.settings.models.find(m => m.provider === ref.provider && m.model === ref.model) || null; }
-function modelLabel(ref) { const m = enabledModel(ref); return (m && m.name && m.name.trim()) ? m.name : ref.model; }
+// Friendly short model name: drop the "org/" prefix and any ":tag", brand-case the rest.
+const MODEL_BRANDS = { gpt: "GPT", claude: "Claude", gemini: "Gemini", deepseek: "DeepSeek", llama: "Llama", mistral: "Mistral", mixtral: "Mixtral", qwen: "Qwen", grok: "Grok", phi: "Phi", gemma: "Gemma", command: "Command", sonar: "Sonar", kimi: "Kimi", glm: "GLM", nova: "Nova", yi: "Yi" };
+function prettyModel(id) {
+  let s = String(id || "");
+  const slash = s.lastIndexOf("/"); if (slash >= 0) s = s.slice(slash + 1);
+  s = s.replace(/:.*$/, "");
+  if (!s) return String(id || "");
+  return s.split(/[-_]/).map(t => {
+    if (!t) return "";
+    const low = t.toLowerCase();
+    if (MODEL_BRANDS[low]) return MODEL_BRANDS[low];
+    if (/\d/.test(t)) return t;                       // version tokens (4.6, 5.5, 4o, v4) kept as-is
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }).filter(Boolean).join(" ");
+}
+function modelLabel(ref) { const m = enabledModel(ref); return (m && m.name && m.name.trim()) ? m.name : prettyModel(ref.model); }
 // First time a provider gets an API key: wire up sensible models/defaults so it works out of the box.
 function onProviderConnected(pk) {
   if (pk === "deepseek") {
@@ -1462,7 +1477,6 @@ function renderNodemap() {
     const item = document.createElement("button"); item.className = "nm-item"; item.dataset.idx = i;
     if (m.nodeTitle) item.textContent = m.nodeTitle;
     else { item.textContent = plainText(m).slice(0, 60); item.classList.add("untitled"); }
-    item.title = m.nodeTitle || plainText(m).slice(0, 120);
     item.onclick = () => { nodePinned = i; scrollToMessage(i); setNodeActive(i); };
     panel.appendChild(item);
   });
@@ -2317,7 +2331,7 @@ function confirmEffort() { closeEffortPop(); }
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
 function openSettings(section) { fillSettings(); switchSection(section || "services"); document.getElementById("modal-bg").classList.add("show"); }
-function closeSettings() { document.getElementById("modal-bg").classList.remove("show"); }
+function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
   document.querySelectorAll("#modal-sections section").forEach(s => s.classList.toggle("hidden", s.dataset.sec !== sec));
@@ -2330,11 +2344,11 @@ function switchSection(sec) {
   if (sec === "quick") {
     populateQuickModelSelect();
     const sc = document.getElementById("set-quick-shortcut");
-    if (sc) sc.textContent = fmtAccel(state.settings.quick.shortcut || "Alt+Space");
+    if (sc) sc.textContent = fmtAccel(state.settings.quick.shortcut || defaultQuick());
   }
   if (sec === "shortcuts") {
     const om = document.getElementById("set-openmain-shortcut");
-    if (om) om.textContent = fmtAccel(state.settings.quick.openMainShortcut || "Alt+Cmd+Space");
+    if (om) om.textContent = fmtAccel(state.settings.quick.openMainShortcut || defaultOpenMain());
   }
   if (sec === "data") fillDataStats();
   if (sec === "about") fillAbout();
@@ -2389,11 +2403,11 @@ function populateQuickModelSelect() {
   const dchat = state.settings.defaults.chat;
   const def = document.createElement("option");
   def.value = "__default__";
-  def.textContent = "跟随默认（" + (dchat ? dchat.model : "未设置") + "）";
+  def.textContent = "跟随默认（" + (dchat ? prettyModel(dchat.model) : "未设置") + "）";
   sel.appendChild(def);
   state.settings.models.forEach(m => {
     const o = document.createElement("option"); o.value = refKey(m);
-    o.textContent = (m.name && m.name.trim()) ? (m.name + " — " + m.model) : ((PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model);
+    o.textContent = modelLabel(m); o.title = (PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model;
     sel.appendChild(o);
   });
   const qm = state.settings.quick.model;
@@ -2407,11 +2421,25 @@ function populateQuickModelSelect() {
   } else sel.value = "__default__";
 }
 // Format an Electron accelerator ("Cmd+Alt+Space") for display ("⌘⌥Space").
+function isMacPlatform() {
+  const dp = document.documentElement.dataset.platform;
+  if (dp) return dp === "mac";
+  if (window.chatbox && window.chatbox.platform) return window.chatbox.platform === "darwin";
+  return /Mac/i.test(navigator.platform || navigator.userAgent || "");
+}
 function fmtAccel(acc) {
   if (!acc) return "—";
-  const sym = { Cmd: "⌘", Command: "⌘", CmdOrCtrl: "⌘", Ctrl: "⌃", Control: "⌃", Alt: "⌥", Option: "⌥", Shift: "⇧", Return: "↩", Enter: "↩", Space: "Space", Escape: "Esc" };
-  return acc.split("+").map(p => sym[p] || p).join("");
+  if (isMacPlatform()) {
+    const sym = { Cmd: "⌘", Command: "⌘", CmdOrCtrl: "⌘", Ctrl: "⌃", Control: "⌃", Alt: "⌥", Option: "⌥", Shift: "⇧", Super: "⌘", Meta: "⌘", Return: "↩", Enter: "↩", Space: "Space", Escape: "Esc" };
+    return acc.split("+").map(p => sym[p] || p).join("");
+  }
+  // Windows / Linux: spelled-out modifier labels joined with "+"
+  const sym = { Cmd: "Win", Command: "Win", CmdOrCtrl: "Ctrl", Ctrl: "Ctrl", Control: "Ctrl", Alt: "Alt", Option: "Alt", Shift: "Shift", Super: "Win", Meta: "Win", Return: "Enter", Enter: "Enter", Space: "Space", Escape: "Esc" };
+  return acc.split("+").map(p => sym[p] || p).join("+");
 }
+// Platform-appropriate default global shortcuts. Mac keeps ⌥Space / ⌥⌘Space; Windows avoids Alt+Space (system menu) and the Cmd key.
+function defaultQuick() { return isMacPlatform() ? "Alt+Space" : "Ctrl+Shift+Space"; }
+function defaultOpenMain() { return isMacPlatform() ? "Alt+Cmd+Space" : "Ctrl+Alt+Space"; }
 // A KeyboardEvent's physical key → an Electron accelerator key token (layout-independent via e.code).
 function codeToKey(code, key) {
   code = code || "";
@@ -2434,7 +2462,7 @@ function populateModelSelect(sel, currentRef) {
   const list = state.settings.models.slice();
   if (currentRef && !list.some(m => modelsEqual(m, currentRef))) list.unshift(currentRef);
   if (!list.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "（请先在「管理模型」中添加模型）"; sel.appendChild(o); return; }
-  list.forEach(m => { const o = document.createElement("option"); o.value = refKey(m); o.textContent = (m.name && m.name.trim()) ? (m.name + " — " + m.model) : ((PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model); sel.appendChild(o); });
+  list.forEach(m => { const o = document.createElement("option"); o.value = refKey(m); o.textContent = modelLabel(m); o.title = (PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model; sel.appendChild(o); });
   if (currentRef) sel.value = refKey(currentRef);
 }
 async function fillAbout() {
@@ -2472,26 +2500,30 @@ function fillSettings() {
   document.getElementById("set-maxtok").value = d.maxTokens || "";
   // quick-ask bar
   const q = state.settings.quick;
-  setSeg("set-quick-enabled-seg", q.enabled === false ? "off" : "on");
-  const scBtn = document.getElementById("set-quick-shortcut"); if (scBtn) scBtn.textContent = fmtAccel(q.shortcut || "Alt+Space");
+  setToggle("set-quick-enabled-tog", q.enabled !== false);
+  const scBtn = document.getElementById("set-quick-shortcut"); if (scBtn) scBtn.textContent = fmtAccel(q.shortcut || defaultQuick());
   setShortcutHint("quick-shortcut-hint", "", false);
   populateQuickModelSelect();
   setSeg("set-quick-prompt-seg", q.promptMode || "concise");
   const ce = document.getElementById("set-quick-concise"); if (ce) ce.value = (q.concisePrompt != null ? q.concisePrompt : QUICK_PROMPT);
   toggleConciseField();
-  setSeg("set-quick-blur-seg", q.closeOnBlur === false ? "off" : "on");
+  setToggle("set-quick-blur-tog", q.closeOnBlur !== false);
   document.getElementById("set-quick-width").value = q.width || 720;
   document.getElementById("quick-width-val").textContent = (q.width || 720) + "px";
   document.getElementById("set-quick-top").value = q.topPct != null ? q.topPct : 18;
   document.getElementById("quick-top-val").textContent = (q.topPct != null ? q.topPct : 18) + "%";
-  setSeg("set-openmain-enabled-seg", q.openMainEnabled === false ? "off" : "on");
-  const omBtn = document.getElementById("set-openmain-shortcut"); if (omBtn) omBtn.textContent = fmtAccel(q.openMainShortcut || "Alt+Cmd+Space");
+  setToggle("set-openmain-enabled-tog", q.openMainEnabled !== false);
+  const omBtn = document.getElementById("set-openmain-shortcut"); if (omBtn) omBtn.textContent = fmtAccel(q.openMainShortcut || defaultOpenMain());
   setShortcutHint("openmain-shortcut-hint", "", false);
 }
 
 // ---- segmented controls ----
 function setSeg(id, val) { document.querySelectorAll("#" + id + " button").forEach(b => b.classList.toggle("on", b.dataset.val === val)); }
 function bindSeg(id, onPick) { document.querySelectorAll("#" + id + " button").forEach(b => b.onclick = () => { setSeg(id, b.dataset.val); onPick(b.dataset.val); }); }
+
+// ---- toggle switches (monochrome on/off) ----
+function setToggle(id, on) { const t = document.getElementById(id); if (t) { t.classList.toggle("on", !!on); t.setAttribute("aria-checked", on ? "true" : "false"); } }
+function bindToggle(id, fn) { const t = document.getElementById(id); if (t) t.onclick = () => { const on = !t.classList.contains("on"); setToggle(id, on); fn(on); }; }
 
 // ---- appearance live preview ----
 function renderSettingsPreview() {
@@ -2589,7 +2621,7 @@ function setupSettingsLive() {
   document.getElementById("set-temp").addEventListener("change", e => { const t = e.target.value; state.settings.defaults.temp = t === "" ? null : Number(t); save(); });
   document.getElementById("set-maxtok").addEventListener("change", e => { const mt = e.target.value; state.settings.defaults.maxTokens = mt === "" ? null : Number(mt); save(); });
   // ---- quick-ask bar ----
-  bindSeg("set-quick-enabled-seg", v => { state.settings.quick.enabled = (v === "on"); save(); });
+  bindToggle("set-quick-enabled-tog", on => { state.settings.quick.enabled = on; save(); });
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
     const ce = document.getElementById("set-quick-concise");
@@ -2597,25 +2629,25 @@ function setupSettingsLive() {
     const cr = document.getElementById("quick-concise-reset");
     if (cr) cr.addEventListener("click", (e) => { e.preventDefault(); state.settings.quick.concisePrompt = QUICK_PROMPT; if (ce) ce.value = QUICK_PROMPT; save(); });
   })();
-  bindSeg("set-quick-blur-seg", v => { state.settings.quick.closeOnBlur = (v === "on"); save(); });
+  bindToggle("set-quick-blur-tog", on => { state.settings.quick.closeOnBlur = on; save(); });
   document.getElementById("set-quick-model").addEventListener("change", e => { const v = e.target.value; state.settings.quick.model = (v === "__default__") ? null : parseRefKey(v); save(); });
   document.getElementById("set-quick-width").addEventListener("input", e => { const n = Number(e.target.value) || 720; state.settings.quick.width = n; document.getElementById("quick-width-val").textContent = n + "px"; save(); });
   document.getElementById("set-quick-top").addEventListener("input", e => { const n = Number(e.target.value); state.settings.quick.topPct = n; document.getElementById("quick-top-val").textContent = n + "%"; save(); });
-  bindSeg("set-openmain-enabled-seg", v => { state.settings.quick.openMainEnabled = (v === "on"); save(); });
+  bindToggle("set-openmain-enabled-tog", on => { state.settings.quick.openMainEnabled = on; save(); });
   document.getElementById("quick-shortcut-reset").addEventListener("click", e => {
     e.preventDefault();
-    state.settings.quick.shortcut = "Alt+Space";
-    document.getElementById("set-quick-shortcut").textContent = fmtAccel("Alt+Space");
+    state.settings.quick.shortcut = defaultQuick();
+    document.getElementById("set-quick-shortcut").textContent = fmtAccel(defaultQuick());
     setShortcutHint("quick-shortcut-hint", "", false); save();
   });
   document.getElementById("openmain-shortcut-reset").addEventListener("click", e => {
     e.preventDefault();
-    state.settings.quick.openMainShortcut = "Alt+Cmd+Space";
-    document.getElementById("set-openmain-shortcut").textContent = fmtAccel("Alt+Cmd+Space");
+    state.settings.quick.openMainShortcut = defaultOpenMain();
+    document.getElementById("set-openmain-shortcut").textContent = fmtAccel(defaultOpenMain());
     setShortcutHint("openmain-shortcut-hint", "", false); save();
   });
-  setupShortcutRecorder("set-quick-shortcut", "quick-shortcut-hint", () => state.settings.quick.shortcut, v => state.settings.quick.shortcut = v, "Alt+Space");
-  setupShortcutRecorder("set-openmain-shortcut", "openmain-shortcut-hint", () => state.settings.quick.openMainShortcut, v => state.settings.quick.openMainShortcut = v, "Alt+Cmd+Space");
+  setupShortcutRecorder("set-quick-shortcut", "quick-shortcut-hint", () => state.settings.quick.shortcut, v => state.settings.quick.shortcut = v, defaultQuick());
+  setupShortcutRecorder("set-openmain-shortcut", "openmain-shortcut-hint", () => state.settings.quick.openMainShortcut, v => state.settings.quick.openMainShortcut = v, defaultOpenMain());
   document.getElementById("modal-close").onclick = closeSettings;
 }
 
@@ -2625,6 +2657,8 @@ function setShortcutHint(id, text, bad) {
   h.className = "key-test-status" + (bad ? " bad" : (text ? " ok" : ""));
 }
 // Click a shortcut button → capture the next key combo and save it as an Electron accelerator.
+const _shortcutRecorders = new Set();   // active recorders' stop() fns — cancelled if Settings closes mid-record
+function cancelShortcutRecording() { [..._shortcutRecorders].forEach(stop => stop()); }
 function setupShortcutRecorder(btnId, hintId, getVal, setVal, fallback) {
   const btn = document.getElementById(btnId);
   if (!btn || btn.dataset.bound) return;
@@ -2635,6 +2669,7 @@ function setupShortcutRecorder(btnId, hintId, getVal, setVal, fallback) {
     recording = false; btn.classList.remove("recording");
     btn.textContent = fmtAccel(getVal() || fallback);
     document.removeEventListener("keydown", onKey, true);
+    _shortcutRecorders.delete(stop);
   };
   const onKey = (e) => {
     if (!recording) return;
@@ -2646,7 +2681,7 @@ function setupShortcutRecorder(btnId, hintId, getVal, setVal, fallback) {
     const mods = [];   // macOS visual order: ⌃ ⌥ ⇧ ⌘
     if (e.ctrlKey) mods.push("Ctrl"); if (e.altKey) mods.push("Alt");
     if (e.shiftKey) mods.push("Shift"); if (e.metaKey) mods.push("Cmd");
-    if (!mods.length) { setShortcutHint(hintId, "请加上 ⌘ / ⌥ / ⌃ / ⇧", true); return; }
+    if (!mods.length) { setShortcutHint(hintId, "请加上 " + (isMacPlatform() ? "⌘ / ⌥ / ⌃ / ⇧" : "Ctrl / Alt / Shift / Win"), true); return; }
     setVal(mods.join("+") + "+" + key);
     setShortcutHint(hintId, "", false); save();        // main re-registers and reports back
     stop();
@@ -2655,6 +2690,7 @@ function setupShortcutRecorder(btnId, hintId, getVal, setVal, fallback) {
     if (recording) { stop(); return; }
     recording = true; btn.classList.add("recording");
     btn.textContent = "按下快捷键…"; setShortcutHint(hintId, "", false);
+    _shortcutRecorders.add(stop);
     document.addEventListener("keydown", onKey, true);
   });
 }

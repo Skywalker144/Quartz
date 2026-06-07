@@ -27,6 +27,9 @@ let currentShortcut = null;   // quick-bar accelerator currently registered with
 let quickEnabled = null;      // whether the quick-bar global shortcut is active
 let currentOpenShortcut = null;  // "open & focus Quartz" accelerator currently registered
 let openEnabled = null;          // whether that global shortcut is active
+// Platform-appropriate default global shortcuts. Windows avoids Alt+Space (system window menu) and the Cmd key.
+const DEF_QUICK = process.platform === "darwin" ? "Alt+Space" : "Ctrl+Shift+Space";
+const DEF_OPENMAIN = process.platform === "darwin" ? "Alt+Cmd+Space" : "Ctrl+Alt+Space";
 
 const QUICK_W = 720;        // fixed width of the Spotlight-style bar
 const QUICK_MIN_H = 150;    // compact height: input row + shadow padding (28/60)
@@ -220,7 +223,7 @@ function toggleQuick() {
 // (Re)register the global shortcut to match settings. Reports success/failure back to the
 // app renderer so the settings panel can flag a conflict.
 function applyQuickShortcut(shortcut, enabled) {
-  const sc = shortcut || "Alt+Space";
+  const sc = shortcut || DEF_QUICK;
   const en = enabled !== false;
   if (sc === currentShortcut && en === quickEnabled) return;   // nothing changed
   if (currentShortcut) { try { globalShortcut.unregister(currentShortcut); } catch (e) {} }
@@ -236,7 +239,7 @@ function applyQuickShortcut(shortcut, enabled) {
 
 // Same, for the "open & focus Quartz" global shortcut.
 function applyOpenShortcut(shortcut, enabled) {
-  const sc = shortcut || "Alt+Cmd+Space";
+  const sc = shortcut || DEF_OPENMAIN;
   const en = enabled !== false;
   if (sc === currentOpenShortcut && en === openEnabled) return;
   if (currentOpenShortcut) { try { globalShortcut.unregister(currentOpenShortcut); } catch (e) {} }
@@ -579,8 +582,8 @@ function buildMenu() {
         { label: "搜索对话", accelerator: "CmdOrCtrl+F", click: () => sendMenu("focus-search") },
         // accelerators below are display-only (registerAccelerator:false) — the real bindings are
         // the global shortcuts, so we don't double-register and double-trigger when focused.
-        { label: "快速提问", accelerator: (quickEnabled !== false && currentShortcut) ? currentShortcut : "Alt+Space", registerAccelerator: false, click: () => toggleQuick() },
-        { label: "打开并聚焦 Quartz", accelerator: (openEnabled !== false && currentOpenShortcut) ? currentOpenShortcut : "Alt+Cmd+Space", registerAccelerator: false, click: () => showMainFocus() },
+        { label: "快速提问", accelerator: (quickEnabled !== false && currentShortcut) ? currentShortcut : DEF_QUICK, registerAccelerator: false, click: () => toggleQuick() },
+        { label: "打开并聚焦 Quartz", accelerator: (openEnabled !== false && currentOpenShortcut) ? currentOpenShortcut : DEF_OPENMAIN, registerAccelerator: false, click: () => showMainFocus() },
         { label: "设置…", accelerator: "CmdOrCtrl+,", click: () => sendMenu("open-settings") },
         { type: "separator" },
         isMac ? { role: "close", label: "关闭窗口" } : { role: "quit", label: "退出" },
@@ -613,8 +616,8 @@ app.whenReady().then(() => {
 
   // Register the default shortcuts now; the app reconciles them with the persisted settings
   // as soon as it boots and pushes its config up.
-  applyQuickShortcut("Alt+Space", true);
-  applyOpenShortcut("Alt+Cmd+Space", true);
+  applyQuickShortcut(DEF_QUICK, true);
+  applyOpenShortcut(DEF_OPENMAIN, true);
 
   setupAutoUpdate();
 

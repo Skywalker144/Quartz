@@ -24,6 +24,8 @@ const ansContent = document.getElementById("qans-content");
 const hintEl = document.getElementById("qhint");
 const copyBtn = document.getElementById("qcopy");
 const contBtn = document.getElementById("qcont");
+const COPYKBD = (api.platform === "darwin") ? "⌘C" : "Ctrl+C";   // platform-correct copy hint (no Mac glyph on Windows)
+copyBtn.innerHTML = '复制 <kbd>' + COPYKBD + '</kbd>';
 
 /* ---------- shared config (pushed up from the main app via IPC) ----------
  * file:// pages don't share IndexedDB, so we can't read the app's store here.
@@ -260,7 +262,7 @@ async function ask() {
     ansContent.innerHTML = renderMd(lastAnswer);
     mode = "answered";
     copyBtn.hidden = false; contBtn.hidden = false;
-    setHint("Enter 进入 Quartz · ⌘C 复制 · Esc 关闭", false);
+    setHint("Enter 进入 Quartz · " + COPYKBD + " 复制 · Esc 关闭", false);
   } catch (err) {
     if (err && err.name === "AbortError") {
       // user dismissed mid-stream — leave whatever we have

@@ -70,7 +70,7 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
       </div>
-      <nav id="nodemap" aria-label="对话节点" title="对话节点（移上查看 / 跳转）">
+      <nav id="nodemap" aria-label="对话节点">
         <div class="nm-bars"></div>
         <div class="nm-panel"></div>
       </nav>
@@ -142,12 +142,16 @@
       <button id="modal-close" title="关闭（Esc）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       <nav id="modal-nav">
         <div class="modal-title">设置</div>
+        <div class="nav-group">通用</div>
         <button class="nav-item" data-sec="appearance">外观</button>
         <button class="nav-item" data-sec="prompts">系统提示词</button>
+        <div class="nav-group">模型</div>
         <button class="nav-item active" data-sec="services">模型服务</button>
         <button class="nav-item" data-sec="defaults">默认模型</button>
+        <div class="nav-group">功能</div>
         <button class="nav-item" data-sec="quick">快速提问</button>
         <button class="nav-item" data-sec="shortcuts">快捷键</button>
+        <div class="nav-group">应用</div>
         <button class="nav-item" data-sec="data">数据</button>
         <button class="nav-item" data-sec="about">关于</button>
       </nav>
@@ -178,17 +182,19 @@
           <section data-sec="appearance" class="hidden">
             <h3>外观</h3>
             <p class="sec-desc">主题、字体、排版与代码配色。改动实时生效。</p>
-            <div class="settings-group">
-              <div class="field">
-                <label>主题</label>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">主题</div></div>
+              <div class="set-row-c">
                 <div class="seg" id="set-theme-seg">
                   <button type="button" data-val="auto">跟随系统</button>
                   <button type="button" data-val="light">浅色</button>
                   <button type="button" data-val="dark">深色</button>
                 </div>
               </div>
-              <div class="field">
-                <label>字体</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">字体</div></div>
+              <div class="set-row-c">
                 <select id="set-font">
                   <option value="system">系统默认</option>
                   <option value="rounded">圆体</option>
@@ -196,29 +202,37 @@
                   <option value="mono">等宽</option>
                 </select>
               </div>
-              <div class="field">
-                <label>字号</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">字号</div></div>
+              <div class="set-row-c">
                 <div class="range-wrap">
                   <input type="range" id="set-fontsize" min="13" max="20" step="1">
                   <span class="val" id="fontsize-val">15px</span>
                 </div>
               </div>
-              <div class="field">
-                <label>消息密度</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">消息密度</div></div>
+              <div class="set-row-c">
                 <div class="seg" id="set-density-seg">
                   <button type="button" data-val="comfortable">舒适</button>
                   <button type="button" data-val="compact">紧凑</button>
                 </div>
               </div>
-              <div class="field">
-                <label>正文宽度</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">正文宽度</div></div>
+              <div class="set-row-c">
                 <div class="range-wrap">
                   <input type="range" id="set-width" min="50" max="100" step="5">
                   <span class="val" id="width-val">90%</span>
                 </div>
               </div>
-              <div class="field">
-                <label>代码配色</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">代码配色</div></div>
+              <div class="set-row-c">
                 <div class="seg" id="set-codetheme-seg">
                   <button type="button" data-val="vivid">多彩</button>
                   <button type="button" data-val="muted">柔和</button>
@@ -245,27 +259,21 @@
           <section data-sec="defaults" class="hidden">
             <h3>默认模型</h3>
             <p class="sec-desc">新对话使用的默认模型，以及自动给对话命名所用的模型。改动实时生效。</p>
-            <div class="settings-group">
-              <div class="field">
-                <label>默认对话模型</label>
-                <select id="chat-model-sel"></select>
-              </div>
-              <div class="field">
-                <label>话题命名模型（自动给对话起标题，建议用便宜的小模型）</label>
-                <select id="title-model-sel"></select>
-              </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">默认对话模型</div><div class="set-row-d">新建对话时默认选用</div></div>
+              <div class="set-row-c"><select id="chat-model-sel"></select></div>
             </div>
-            <div class="settings-group">
-              <div class="row" style="display:flex; gap:14px;">
-                <div class="field" style="flex:1;">
-                  <label>温度 (Temperature)</label>
-                  <input type="number" id="set-temp" min="0" max="2" step="0.1" placeholder="1">
-                </div>
-                <div class="field" style="flex:1;">
-                  <label>最大输出 Tokens（可选）</label>
-                  <input type="number" id="set-maxtok" min="1" step="1" placeholder="留空=不限">
-                </div>
-              </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">话题命名模型</div><div class="set-row-d">自动给对话起标题，建议用便宜的小模型</div></div>
+              <div class="set-row-c"><select id="title-model-sel"></select></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">温度 (Temperature)</div><div class="set-row-d">越高越发散、越低越稳定，留空用默认</div></div>
+              <div class="set-row-c"><input type="number" id="set-temp" min="0" max="2" step="0.1" placeholder="1"></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">最大输出 Tokens</div><div class="set-row-d">单次回复长度上限，留空表示不限制</div></div>
+              <div class="set-row-c"><input type="number" id="set-maxtok" min="1" step="1" placeholder="不限"></div>
             </div>
           </section>
 
@@ -273,28 +281,27 @@
           <section data-sec="quick" class="hidden">
             <h3>快速提问</h3>
             <p class="sec-desc">全局快捷键唤出的速问浮条（类似 Spotlight）：随处按下快捷键即可提问，回车流式作答，也可一键带入 Quartz 继续多轮。改动实时生效。</p>
-            <div class="settings-group">
-              <div class="field">
-                <label>启用</label>
-                <div class="seg" id="set-quick-enabled-seg">
-                  <button type="button" data-val="on">开启</button>
-                  <button type="button" data-val="off">关闭</button>
-                </div>
-              </div>
-              <div class="field">
-                <label>快捷键</label>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">启用</div><div class="set-row-d">全局唤出速问浮条</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-quick-enabled-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">快捷键</div></div>
+              <div class="set-row-c">
                 <div class="shortcut-row">
                   <button type="button" class="btn small" id="set-quick-shortcut">⌥Space</button>
                   <a href="#" id="quick-shortcut-reset">恢复默认</a>
                   <span id="quick-shortcut-hint" class="key-test-status"></span>
                 </div>
               </div>
-              <div class="field">
-                <label>使用的模型</label>
-                <select id="set-quick-model"></select>
-              </div>
-              <div class="field">
-                <label>系统提示词</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">使用的模型</div></div>
+              <div class="set-row-c"><select id="set-quick-model"></select></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">系统提示词</div></div>
+              <div class="set-row-c">
                 <div class="seg" id="set-quick-prompt-seg">
                   <button type="button" data-val="concise">简洁速答</button>
                   <button type="button" data-val="default">跟随默认</button>
@@ -302,30 +309,27 @@
                 </div>
               </div>
             </div>
-            <div class="settings-group" id="quick-concise-field">
-              <div class="field">
-                <label>简洁速答提示词 <a href="#" id="quick-concise-reset">恢复默认</a></label>
-                <textarea id="set-quick-concise" class="set-textarea" rows="6" spellcheck="false" placeholder="用于「简洁速答」模式的系统提示词"></textarea>
-              </div>
+            <div class="set-block" id="quick-concise-field">
+              <div class="set-row-t">简洁速答提示词 <a href="#" id="quick-concise-reset">恢复默认</a></div>
+              <textarea id="set-quick-concise" class="set-textarea" rows="6" spellcheck="false" placeholder="用于「简洁速答」模式的系统提示词"></textarea>
             </div>
             <div class="group-label">关闭与外观</div>
-            <div class="settings-group">
-              <div class="field">
-                <label>点击外部时</label>
-                <div class="seg" id="set-quick-blur-seg">
-                  <button type="button" data-val="on">关闭浮条</button>
-                  <button type="button" data-val="off">保持打开</button>
-                </div>
-              </div>
-              <div class="field">
-                <label>横条宽度</label>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">点击外部时关闭</div><div class="set-row-d">点击浮条以外区域时自动收起</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-quick-blur-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">横条宽度</div></div>
+              <div class="set-row-c">
                 <div class="range-wrap">
                   <input type="range" id="set-quick-width" min="480" max="960" step="20">
                   <span class="val" id="quick-width-val">720px</span>
                 </div>
               </div>
-              <div class="field">
-                <label>出现位置（距顶）</label>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">出现位置（距顶）</div></div>
+              <div class="set-row-c">
                 <div class="range-wrap">
                   <input type="range" id="set-quick-top" min="6" max="40" step="2">
                   <span class="val" id="quick-top-val">18%</span>
@@ -339,22 +343,18 @@
             <h3>快捷键</h3>
             <p class="sec-desc">全局快捷键（在任何应用里都生效）。改动实时生效。</p>
             <div class="group-label">打开 Quartz</div>
-            <div class="settings-group">
-              <div class="field">
-                <label>启用</label>
-                <div class="seg" id="set-openmain-enabled-seg">
-                  <button type="button" data-val="on">开启</button>
-                  <button type="button" data-val="off">关闭</button>
-                </div>
-              </div>
-              <div class="field">
-                <label>快捷键</label>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">启用</div><div class="set-row-d">在任意应用中按下快捷键唤起主窗口</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-openmain-enabled-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">快捷键</div><div class="set-row-d">按下即唤起 Quartz 主窗口并聚焦输入框</div></div>
+              <div class="set-row-c">
                 <div class="shortcut-row">
                   <button type="button" class="btn small" id="set-openmain-shortcut">⌥⌘Space</button>
                   <a href="#" id="openmain-shortcut-reset">恢复默认</a>
                   <span id="openmain-shortcut-hint" class="key-test-status"></span>
                 </div>
-                <div class="field-hint">在任何应用里按下即可唤起 Quartz 主窗口并聚焦输入框。</div>
               </div>
             </div>
           </section>
@@ -394,7 +394,7 @@
                 <button class="btn small" id="about-check-update" type="button">检查更新</button>
                 <span class="about-update-status" id="about-update-status"></span>
               </div>
-              <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，支持 OpenRouter / OpenAI / Anthropic / DeepSeek / Google，内置全局速答(⌥Space)与一键导出。</p>
+              <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，支持 OpenRouter / OpenAI / Anthropic / DeepSeek / Google，内置全局速答与一键导出。</p>
               <div class="about-meta" id="about-meta"></div>
             </div>
           </section>
