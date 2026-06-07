@@ -562,6 +562,25 @@ function setupMarked() {
   marked.use({ extensions: [blockMath, inlineMath] });
 }
 
+// Streaming loader: the Quartz crystal with a highlight rotating around its nine facets (matches the icon).
+const QZ_CRYSTAL = '<svg class="qz-crystal" viewBox="0 0 24 24" aria-hidden="true">'
+  + '<polygon class="qc-center" points="10.2,8.5 13.8,8.5 13.8,15.5 10.2,15.5"/>'
+  + '<polygon class="qc p1" points="12,3 10.2,8.5 13.8,8.5"/>'
+  + '<polygon class="qc p2" points="12,3 13.8,8.5 17,8.5"/>'
+  + '<polygon class="qc p3" points="13.8,8.5 17,8.5 17,15.5 13.8,15.5"/>'
+  + '<polygon class="qc p4" points="12,21 13.8,15.5 17,15.5"/>'
+  + '<polygon class="qc p5" points="12,21 10.2,15.5 13.8,15.5"/>'
+  + '<polygon class="qc p6" points="12,21 7,15.5 10.2,15.5"/>'
+  + '<polygon class="qc p7" points="7,8.5 10.2,8.5 10.2,15.5 7,15.5"/>'
+  + '<polygon class="qc p8" points="12,3 7,8.5 10.2,8.5"/></svg>';
+function appendStreamLoader(el) {
+  if (!el) return;
+  const last = el.lastElementChild;                                  // trail the last line inline (like a caret);
+  const t = (last && /^(P|LI|H[1-6])$/.test(last.tagName)) ? last : el;   // for code/lists fall back to the block
+  t.insertAdjacentHTML("beforeend", '<span class="qz-load">' + QZ_CRYSTAL + '</span>');
+}
+function removeStreamLoader(el) { const l = el && el.querySelector(".qz-load"); if (l) l.remove(); }
+
 function renderMarkdown(text) {
   let html;
   if (window.marked) { try { html = marked.parse(text, { breaks: true, gfm: true }); } catch (e) {} }
@@ -1735,7 +1754,7 @@ async function runCompletion(conv, opts) {
   const contentEl = row.querySelector(".msg-body > .msg-content");
   const reasoningWrap = row.querySelector(".reasoning");
   const reasoningBody = row.querySelector(".reasoning-body");
-  contentEl.innerHTML = ""; contentEl.classList.add("cursor-blink");
+  contentEl.innerHTML = ""; appendStreamLoader(contentEl);
 
   // Pin this turn's user message ~20% down from the top (not glued to the very top): a little breathing
   // room above, ~80% of the viewport below for the streaming reply. Manual wheel/touch releases the pin.
@@ -1773,7 +1792,7 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (userSelecting()) return; contentEl.innerHTML = renderMarkdown(t); enhanceCode(box); applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (userSelecting()) return; contentEl.innerHTML = renderMarkdown(t); appendStreamLoader(contentEl); enhanceCode(box); applyAutoScroll(box); },
       onReasoning: (rt) => { racc = rt; if (userSelecting()) return; if (reasoningWrap) reasoningWrap.style.display = "block"; if (reasoningBody) reasoningBody.innerHTML = renderMarkdown(rt); applyAutoScroll(box); },
     });
     acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
@@ -1782,7 +1801,7 @@ async function runCompletion(conv, opts) {
     else errInfo = friendlyError(err);
   }
 
-  contentEl.classList.remove("cursor-blink");
+  removeStreamLoader(contentEl);
   box.classList.remove("streaming");
   cancelSmooth();
   setSending(false); abortController = null;

@@ -77,9 +77,18 @@ body { font-family: var(--font-family); -webkit-user-select: none; user-select: 
 #qans-scroll::after { bottom: 0; background: linear-gradient(to top, var(--bg), transparent); }
 #qans-scroll.fade-top::before { opacity: 1; }
 #qans-scroll.fade-bottom::after { opacity: 1; }
-/* streaming loader / caret — same blinking block the main app uses */
-#qans-content.cursor-blink::after { content: "▋"; color: var(--accent); animation: qblink 1s steps(2) infinite; margin-left: 1px; }
-@keyframes qblink { 50% { opacity: 0; } }
+/* streaming loader — the Quartz crystal with a highlight rotating around its facets */
+.qz-load { display: inline-flex; vertical-align: -5px; margin-left: 2px; }
+.qz-crystal { width: 19px; height: 19px; }
+.qz-crystal .qc, .qz-crystal .qc-center { fill: var(--text); }
+.qz-crystal .qc-center { opacity: .26; }
+.qz-crystal .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }
+.qz-crystal .p1 { animation-delay: 0s; } .qz-crystal .p2 { animation-delay: -.175s; }
+.qz-crystal .p3 { animation-delay: -.35s; } .qz-crystal .p4 { animation-delay: -.525s; }
+.qz-crystal .p5 { animation-delay: -.7s; } .qz-crystal .p6 { animation-delay: -.875s; }
+.qz-crystal .p7 { animation-delay: -1.05s; } .qz-crystal .p8 { animation-delay: -1.225s; }
+@keyframes qzfacet { 0%, 100% { opacity: .15; } 7% { opacity: 1; } 22% { opacity: .15; } }
+@media (prefers-reduced-motion: reduce) { .qz-crystal .qc { animation: none; opacity: .5; } }
 #qfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
 #qhint { font-size: 12px; color: var(--text-dim); }
 #qhint.error { color: var(--danger); }

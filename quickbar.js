@@ -55,7 +55,42 @@ function applyTheme(theme) {
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (cfg && cfg.theme === "auto") applyTheme("auto"); });
 
-/* ---------- markdown ---------- */
+/* ---------- markdown + math (KaTeX), mirroring the main app ---------- */
+(function setupMd() {
+  if (!window.marked) return;
+  const renderMath = (tex, display) => {
+    if (!window.katex) return (display ? "$$" + tex + "$$" : "$" + tex + "$");
+    try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); }
+    catch (e) { return (display ? "$$" + tex + "$$" : "$" + tex + "$"); }
+  };
+  const blockMath = {
+    name: "blockMath", level: "block",
+    start(src) { const a = [src.indexOf("$$"), src.indexOf("\\[")].filter(x => x >= 0); return a.length ? Math.min.apply(null, a) : undefined; },
+    tokenizer(src) {
+      let m = /^\$\$([\s\S]+?)\$\$/.exec(src); if (m) return { type: "blockMath", raw: m[0], text: m[1].trim() };
+      m = /^\\\[([\s\S]+?)\\\]/.exec(src); if (m) return { type: "blockMath", raw: m[0], text: m[1].trim() };
+    },
+    renderer(t) { return '<div class="math-block">' + renderMath(t.text, true) + "</div>"; },
+  };
+  const inlineMath = {
+    name: "inlineMath", level: "inline",
+    start(src) { const a = [src.indexOf("$"), src.indexOf("\\(")].filter(x => x >= 0); return a.length ? Math.min.apply(null, a) : undefined; },
+    tokenizer(src) {
+      let m = /^\$\$([^\n]+?)\$\$/.exec(src); if (m) return { type: "inlineMath", raw: m[0], text: m[1].trim(), display: true };
+      m = /^\\\(([\s\S]+?)\\\)/.exec(src); if (m) return { type: "inlineMath", raw: m[0], text: m[1], display: false };
+      m = /^\$([^\n$]+?)\$/.exec(src);
+      if (m) {
+        const b = m[1];
+        if (/^\s|\s$/.test(b)) return;
+        if (/^\d+(\.\d+)?$/.test(b)) return;
+        if (/\d/.test(src.charAt(m[0].length))) return;
+        return { type: "inlineMath", raw: m[0], text: b, display: false };
+      }
+    },
+    renderer(t) { return renderMath(t.text, !!t.display); },
+  };
+  try { marked.use({ extensions: [blockMath, inlineMath] }); } catch (e) {}
+})();
 function renderMd(t) {
   let html;
   if (window.marked) { try { html = marked.parse(t, { breaks: true, gfm: true }); } catch (e) {} }
@@ -140,8 +175,30 @@ function reportHeight() {
 }
 
 /* ---------- UI helpers ---------- */
-// Loading / streaming caret — the same blinking block the main app shows before & during output.
-function setLoading(on) { ansContent.classList.toggle("cursor-blink", on); }
+// Loading indicator: the Quartz crystal with a highlight rotating around its nine facets.
+const QZ_CRYSTAL = '<svg class="qz-crystal" viewBox="0 0 24 24" aria-hidden="true">'
+  + '<polygon class="qc-center" points="10.2,8.5 13.8,8.5 13.8,15.5 10.2,15.5"/>'
+  + '<polygon class="qc p1" points="12,3 10.2,8.5 13.8,8.5"/>'
+  + '<polygon class="qc p2" points="12,3 13.8,8.5 17,8.5"/>'
+  + '<polygon class="qc p3" points="13.8,8.5 17,8.5 17,15.5 13.8,15.5"/>'
+  + '<polygon class="qc p4" points="12,21 13.8,15.5 17,15.5"/>'
+  + '<polygon class="qc p5" points="12,21 10.2,15.5 13.8,15.5"/>'
+  + '<polygon class="qc p6" points="12,21 7,15.5 10.2,15.5"/>'
+  + '<polygon class="qc p7" points="7,8.5 10.2,8.5 10.2,15.5 7,15.5"/>'
+  + '<polygon class="qc p8" points="12,3 7,8.5 10.2,8.5"/></svg>';
+const LOADER_HTML = '<span class="qz-load">' + QZ_CRYSTAL + '</span>';
+let _loading = false;
+function appendLoader() {
+  if (!_loading) return;
+  const last = ansContent.lastElementChild;
+  const t = (last && /^(P|LI|H[1-6])$/.test(last.tagName)) ? last : ansContent;   // trail the last line inline
+  t.insertAdjacentHTML("beforeend", LOADER_HTML);
+}
+function setLoading(on) {
+  _loading = on;
+  const ex = ansContent.querySelector(".qz-load"); if (ex) ex.remove();
+  if (on) appendLoader();
+}
 // Show top/bottom edge fades only when the answer is actually scrolled out of view.
 function updateFades() {
   const el = ansContent;
@@ -194,6 +251,7 @@ async function ask() {
     const r = await streamAsk(text, controller.signal, (acc) => {
       lastAnswer = acc;
       ansContent.innerHTML = renderMd(acc);
+      appendLoader();                // keep the rotating crystal trailing the streamed text
       updateFades();                 // no auto-scroll — the answer stays put, user scrolls if they want
       reportHeight();
     });
