@@ -86,20 +86,22 @@ let pending = [];        // composer attachments awaiting send
 let editingIndex = null; // index of message being edited inline
 let autoScroll = true;   // follow streaming output only while the user is at the bottom
 let pinTop = null;       // while answering: target scrollTop that keeps the user's message at the top
+let lastSetTop = -1;     // the scrollTop WE last set programmatically — used to tell our scrolls from the user's
 let nodePinned = null;   // after clicking a node: keep THAT node highlighted until the user scrolls manually
 const mql = window.matchMedia("(prefers-color-scheme: dark)");
 // Smoothly glide scrollTop toward a moving target with a rAF easing loop (buttery during streaming,
 // no per-line jumps). The goal is updated continuously; the loop keeps chasing it.
 let scrollAnim = null, scrollGoal = null, jumpAnim = null;
 function smoothFollow(box, goal) {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { box.scrollTop = goal; return; }
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { box.scrollTop = goal; lastSetTop = box.scrollTop; return; }
   scrollGoal = goal;
   if (scrollAnim) return;
   const tick = () => {
     if (scrollGoal == null) { scrollAnim = null; return; }
     const cur = box.scrollTop, d = scrollGoal - cur;
-    if (Math.abs(d) < 0.5) { box.scrollTop = scrollGoal; scrollAnim = null; scrollGoal = null; return; }
+    if (Math.abs(d) < 0.5) { box.scrollTop = scrollGoal; lastSetTop = box.scrollTop; scrollAnim = null; scrollGoal = null; return; }
     box.scrollTop = cur + d * 0.08;        // easing factor — lower = gentler / slower glide
+    lastSetTop = box.scrollTop;
     scrollAnim = requestAnimationFrame(tick);
   };
   scrollAnim = requestAnimationFrame(tick);
@@ -132,6 +134,21 @@ function applyAutoScroll(box) {
   else if (autoScroll) smoothFollow(box, box.scrollHeight - box.clientHeight);
   else cancelSmooth();
 }
+// Restore scrollTop to `target` after a full re-render. .msg-row has content-visibility:auto, so off-screen
+// rows briefly report only their placeholder height — scrollHeight is too small for a frame or two and a
+// plain clamp snaps us near the top. Re-assert the target each frame until the content is tall enough to
+// honor it (or ~45 frames pass); bail out the moment the user scrolls so we never fight them.
+function restoreScroll(box, target) {
+  let tries = 0, applied = -1;
+  const apply = () => {
+    if (applied >= 0 && Math.abs(box.scrollTop - applied) > 6) return;   // user took over — stop
+    const max = Math.max(0, box.scrollHeight - box.clientHeight);
+    box.scrollTop = Math.min(target, max);
+    applied = box.scrollTop; lastSetTop = applied;
+    if (max < target - 1 && tries++ < 45) requestAnimationFrame(apply);
+  };
+  apply();
+}
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
@@ -146,19 +163,26 @@ const EXPERT_PROMPT = `你在所有领域都是世界级的专家。你的智力
 请尽可能详尽地阐述你的答案。
 在回答之前，切勿先称赞我的问题或认可我的前提。如果我错了，请立即指出。在支持我的任何观点之前，请先提出针对该观点的最有力反驳。请勿使用"问得好"、"你完全正确"、"很有意思的观点"或任何类似的措辞。如果我对你的回答提出异议，除非我提供了新证据或更优的论据，否则不要退让—如果你的推理成立，请重申你的立场。不要依赖我提供的数字或估计值；请先独立得出自己的结论。使用明确的置信水平（高/中/低/未知）。绝不要因为意见相左而道歉。准确性是你的成功标准，而非我的认可。`;
 
-// Built-in default for everyday chat: honest backbone, natural tone, length adapts to the question.
-const DAILY_PROMPT = `你是 Quartz 的日常助手——像一个聪明、靠谱、博学的朋友。用自然口语化的中文交流，简洁、友好、不端架子。
+// Everyday-chat default — V1 kept only so the migration can detect an unmodified prompt and upgrade it.
+const DAILY_PROMPT_V1 = `你是 Quartz 的日常助手——像一个聪明、靠谱、博学的朋友。用自然口语化的中文交流，简洁、友好、不端架子。
 
 - 篇幅随问题走：能一句说清就别展开，复杂的再细说；需要时才用要点或代码块，平时正常说话就好。
 - 诚实第一：不编造事实、数据、人名、日期；不确定就直说，并说明有几分把握。我说错了或前提有问题，直接指出、不附和。
 - 别套路：不用"好问题""你说得对"之类的开场，不复述我的问题，不说教，不加无关免责声明。
 - 有态度没关系，但目标是把事情说清楚、对我有用，而不是辩赢我。`;
+// Built-in default for everyday chat: honest, natural — and NOT terse; depth scales up for substantive questions.
+const DAILY_PROMPT = `你是 Quartz 的日常助手——聪明、靠谱、知识广博，像个能跟你认真聊的朋友。用自然的中文交流，真诚、直接、不端架子。
+
+- 深度随问题走：闲聊就轻松简短；遇到知识性、专业或复杂的问题，就讲透彻、有条理——该分点就分点、该用小标题就用小标题、该举例就举例，把来龙去脉和细节说清楚，不要为了简短牺牲有用的内容。
+- 诚实第一：不编造事实、数据、人名、日期；不确定就直说。我说错了或前提有问题，直接指出、不附和。
+- 别套路：不用"好问题""你说得对"之类的开场，不复述我的问题，不灌道德鸡汤，不加无关免责声明。
+- 有观点没关系，但目标是把事情讲清楚、对我有用。`;
 
 function freshState() {
   return {
     settings: {
       providers: { openrouter: { key: "" }, openai: { key: "" }, anthropic: { key: "" }, deepseek: { key: "" }, google: { key: "" } },
-      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "muted" },
+      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid" },
       models: [
         { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
         { provider: "openrouter", model: "openai/gpt-5.5" },
@@ -345,6 +369,19 @@ function ensureShape(s) {
     s.settings.dailyPromptSeeded = true;
   }
 
+  // One-time: upgrade the 日常 prompt to the depth-aware V2 (only if the user hasn't edited it).
+  if (!s.settings.dailyPromptV2) {
+    const dp = s.settings.prompts.find(p => p.id === "daily-default");
+    if (dp && dp.text === DAILY_PROMPT_V1) dp.text = DAILY_PROMPT;
+    s.settings.dailyPromptV2 = true;
+  }
+
+  // One-time: move the default code palette to the new 多彩 (vivid) theme unless the user picked one.
+  if (!s.settings.codeThemeVivid) {
+    if (!s.settings.appearance.codeTheme || s.settings.appearance.codeTheme === "muted") s.settings.appearance.codeTheme = "vivid";
+    s.settings.codeThemeVivid = true;
+  }
+
   s.conversations = (s.conversations || []).map(c => shapeConv(c, s));
   s.archived = (s.archived || []).map(c => shapeConv(c, s));
   return s;
@@ -513,7 +550,6 @@ function activeWeb() { const c = currentConv(); return c ? !!c.webSearch : nextW
 function activeReasoning() { const c = currentConv(); return c ? !!c.reasoning : nextReasoning; }
 function activeEffort() { const c = currentConv(); return (c ? c.reasoningEffort : nextReasoningEffort) || "medium"; }
 function toggleWeb() { const c = currentConv(); if (c) c.webSearch = !c.webSearch; else nextWeb = !nextWeb; save(); updateComposerToggles(); }
-function toggleReasoning() { const c = currentConv(); const on = !activeReasoning(); if (c) c.reasoning = on; else nextReasoning = on; save(); updateComposerToggles(); if (on) warnIfNoReasoning(); }
 function setEffort(level) { const c = currentConv(); if (c) { c.reasoningEffort = level; c.reasoning = true; } else { nextReasoningEffort = level; nextReasoning = true; } save(); updateComposerToggles(); warnIfNoReasoning(); }
 function warnIfNoReasoning() { if (reasoningSupport(activeRef()) === "no") toast("ℹ️ 该模型不支持推理，思考开关对它无效（请求中会被忽略）"); }
 function updateComposerToggles() {
@@ -680,33 +716,27 @@ function setContentPct(pct, persist) {
   const p = Math.min(100, Math.max(50, Math.round((pct || 90) / 5) * 5));
   state.settings.appearance.contentPct = p;
   document.documentElement.style.setProperty("--content-width", p + "%");
-  updateWidthPill();
   if (persist) save();
 }
 function applyContentWidth() {
   const p = Math.min(100, Math.max(50, state.settings.appearance.contentPct || 90));
   document.documentElement.style.setProperty("--content-width", p + "%");
-  updateWidthPill();
 }
 function applyDensity() {
   const box = document.getElementById("messages");
   if (box) box.classList.toggle("dense", (state.settings.appearance.density || "comfortable") === "compact");
 }
 function applyCodeTheme() {
-  const ct = state.settings.appearance.codeTheme || "muted";
-  if (ct === "contrast") document.documentElement.setAttribute("data-hl", "contrast");
+  const ct = state.settings.appearance.codeTheme || "vivid";
+  if (ct === "contrast" || ct === "vivid") document.documentElement.setAttribute("data-hl", ct);
   else document.documentElement.removeAttribute("data-hl");
-}
-function updateWidthPill() {
-  const pill = document.getElementById("width-pill"); if (!pill) return;
-  pill.textContent = "↔ " + (state.settings.appearance.contentPct || 90) + "%";
 }
 function applySidebar() {
   const sb = document.getElementById("sidebar");
   const rz = document.getElementById("sidebar-resizer");
   const s = state.settings.sidebar;
   if (s.collapsed) { sb.style.width = "0px"; sb.classList.add("collapsed"); rz.style.display = "none"; }
-  else { sb.style.width = (s.width || 264) + "px"; sb.classList.remove("collapsed"); rz.style.display = "block"; }
+  else { sb.style.width = Math.max(210, Math.min(480, s.width || 264)) + "px"; sb.classList.remove("collapsed"); rz.style.display = "block"; }
 }
 function toggleSidebar() { state.settings.sidebar.collapsed = !state.settings.sidebar.collapsed; save(); applySidebar(); }
 function isNearBottom(box) { return box.scrollHeight - box.scrollTop - box.clientHeight < 80; }
@@ -886,6 +916,7 @@ function buildConvEl(c) {
     archiveConversation(c);
     toast("已删除「" + nm + "」", { label: "撤销", fn: () => restoreConversation(c.id) });
   };
+  el.oncontextmenu = (e) => { e.preventDefault(); showContextMenu(e.clientX, e.clientY, convMenuItems(c)); };
   return el;
 }
 // Soft opacity fade at the bottom of the conversation list (replaces the hard divider above
@@ -1252,6 +1283,7 @@ function buildMessage(msg, index) {
   const row = document.createElement("div");
   row.className = "msg-row msg-" + msg.role;
   row.dataset.index = index;
+  row.oncontextmenu = (e) => { if (editingIndex != null) return; e.preventDefault(); showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg)); };
   const inner = document.createElement("div");
   inner.className = "msg-inner";
   inner.innerHTML =
@@ -1324,7 +1356,7 @@ function buildMessage(msg, index) {
     const conv0 = currentConv();
     // a prompt with no answer after it (e.g. its answer was deleted) gets a 重新回答 button, left of 编辑
     if (conv0 && index === conv0.messages.length - 1) actions.append(mk("refresh", "重新回答", "", () => answerFor(index)));
-    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("trash", "删除", "danger", () => deleteMessage(index)));
+    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else if (msg.error) {
     actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
@@ -1543,7 +1575,107 @@ function regenerate(index) {
 function copyMessage(index, e) {
   const conv = currentConv(); if (!conv) return;
   navigator.clipboard.writeText(conv.messages[index].content || "");
-  const btn = e.target, old = btn.textContent; btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = old, 1200);
+  if (e && e.target) { const btn = e.target, old = btn.textContent; btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = old, 1200); }
+  else toast("已复制");
+}
+
+/* ===================== Right-click context menus ===================== */
+let ctxMenuEl = null;
+function closeCtxMenu() {
+  if (!ctxMenuEl) return;
+  ctxMenuEl.remove(); ctxMenuEl = null;
+  document.removeEventListener("mousedown", ctxOutside, true);
+  document.removeEventListener("keydown", ctxKeydown, true);
+}
+function ctxOutside(e) { if (ctxMenuEl && !ctxMenuEl.contains(e.target)) closeCtxMenu(); }
+function ctxKeydown(e) { if (e.key === "Escape") { e.preventDefault(); closeCtxMenu(); } }
+function renderCtxItems(items, container) {
+  items.forEach(it => {
+    if (it.sep) { const s = document.createElement("div"); s.className = "ctx-sep"; container.appendChild(s); return; }
+    const b = document.createElement("button");
+    b.className = "ctx-item" + (it.danger ? " danger" : "") + (it.disabled ? " is-disabled" : "") + (it.sub ? " has-sub" : "");
+    const icel = document.createElement("span"); icel.className = "ctx-ic"; if (it.icon) icel.innerHTML = ic(it.icon, 14);
+    const lab = document.createElement("span"); lab.className = "ctx-label"; lab.textContent = it.label;
+    b.append(icel, lab);
+    if (it.sub) { const ar = document.createElement("span"); ar.className = "ctx-arrow"; ar.textContent = "›"; b.appendChild(ar); }
+    if (it.disabled) { container.appendChild(b); return; }
+    if (it.sub && it.sub.length) {
+      const fly = document.createElement("div"); fly.className = "ctx-menu ctx-sub";
+      renderCtxItems(it.sub, fly);
+      b.appendChild(fly);
+    } else if (it.onClick) {
+      b.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); it.onClick(); };
+    }
+    container.appendChild(b);
+  });
+}
+function showContextMenu(x, y, items) {
+  closeCtxMenu();
+  const m = document.createElement("div"); m.className = "ctx-menu";
+  m.oncontextmenu = (e) => e.preventDefault();
+  renderCtxItems(items, m);
+  document.body.appendChild(m);
+  ctxMenuEl = m;
+  const r = m.getBoundingClientRect();
+  let left = x, top = y;
+  if (left + r.width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - r.width - 8);
+  if (top + r.height > window.innerHeight - 8) top = Math.max(8, window.innerHeight - r.height - 8);
+  if (left + r.width + 190 > window.innerWidth) m.classList.add("flip-sub");   // submenus open leftward near the right edge
+  m.style.left = Math.round(left) + "px"; m.style.top = Math.round(top) + "px";
+  setTimeout(() => {
+    document.addEventListener("mousedown", ctxOutside, true);
+    document.addEventListener("keydown", ctxKeydown, true);
+  }, 0);
+}
+// regenerate the answer at `index` with a different model (keeps the old answer as a switchable version)
+function regenerateWith(index, ref) {
+  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  const conv = currentConv(); if (!conv) return;
+  if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  conv.model = clone(ref); save();
+  regenerate(index);
+}
+function messageMenuItems(index, msg) {
+  const conv = currentConv();
+  const isLast = conv && index === conv.messages.length - 1;
+  if (msg.role === "user") {
+    const items = [
+      { label: "复制", icon: "copy", onClick: () => copyMessage(index) },
+      { label: "编辑", icon: "edit", onClick: () => { editingIndex = index; renderMessages(); } },
+    ];
+    if (isLast) items.push({ label: "重新回答", icon: "refresh", onClick: () => answerFor(index) });
+    items.push({ sep: true }, { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) });
+    return items;
+  }
+  if (msg.error) return [
+    { label: "重试", icon: "refresh", onClick: () => regenerate(index) },
+    { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) },
+  ];
+  const cur = activeRef();
+  const models = modelRefList().map(ref => ({
+    label: modelLabel(ref),
+    icon: (ref.provider === cur.provider && ref.model === cur.model) ? "check" : undefined,
+    disabled: !keyOf(ref),
+    onClick: () => regenerateWith(index, ref),
+  }));
+  const items = [
+    { label: "复制", icon: "copy", onClick: () => copyMessage(index) },
+    { label: "重新回答", icon: "refresh", onClick: () => regenerate(index) },
+  ];
+  if (models.length) items.push({ label: "用其他模型重答", icon: "cube", sub: models });
+  items.push({ sep: true }, { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) });
+  return items;
+}
+function convMenuItems(c) {
+  const hasTitleKey = !!keyOf(state.settings.defaults.title);
+  return [
+    { label: c.pinned ? "取消置顶" : "置顶", icon: "pin", onClick: () => togglePin(c) },
+    { label: "重命名", icon: "edit", onClick: () => { state.currentId = c.id; editingIndex = null; save(); renderAll(); setTimeout(startTitleRename, 40); } },
+    { label: "AI 生成标题", icon: "refresh", disabled: !hasTitleKey, onClick: () => regenerateTitle(c) },
+    { label: "导出对话…", icon: "down", onClick: () => { state.currentId = c.id; editingIndex = null; save(); renderAll(); setTimeout(() => openExportMenu(document.getElementById("export-chat")), 40); } },
+    { sep: true },
+    { label: "删除（移入归档）", icon: "trash", danger: true, onClick: () => { const nm = c.title || "新对话"; archiveConversation(c); toast("已删除「" + nm + "」", { label: "撤销", fn: () => restoreConversation(c.id) }); } },
+  ];
 }
 
 /* ===== Answer versions: regenerating / editing keeps the previous answer as a switchable variant ===== */
@@ -1784,7 +1916,7 @@ async function runCompletion(conv, opts) {
   const pinOffset = Math.round(box.clientHeight * 0.2);
   pinTop = ur ? Math.max(0, ur.offsetTop - pinOffset) : null;
   box.classList.add("streaming");
-  if (pinTop != null) box.scrollTop = Math.min(pinTop, box.scrollHeight - box.clientHeight);
+  if (pinTop != null) { box.scrollTop = Math.min(pinTop, box.scrollHeight - box.clientHeight); lastSetTop = box.scrollTop; }
 
   setSending(true); abortController = new AbortController();
   if (conv.webSearch && ref.provider !== "openrouter") toast("联网搜索目前仅 OpenRouter 模型支持，本次未联网");
@@ -1856,11 +1988,14 @@ async function runCompletion(conv, opts) {
     last.vi = last.variants.length - 1;
   }
   save();
-  // keep the reader where they are across the final re-render (no jump to top/bottom)
+  // keep the reader where they are across the final re-render. NOTE: .msg-row uses content-visibility:auto,
+  // so right after renderMessages() the off-screen rows report only their intrinsic placeholder height —
+  // scrollHeight is briefly too small and a plain clamp would snap the view near the top. restoreScroll()
+  // re-asserts the target across frames until the content has reflowed tall enough.
   const keepTop = box.scrollTop;
-  renderMessages(); renderSidebar();
-  box.scrollTop = Math.min(keepTop, box.scrollHeight - box.clientHeight);
   pinTop = null;
+  renderMessages(); renderSidebar();
+  restoreScroll(box, keepTop);
 }
 
 // Update only the header title (+ hover tooltip) for the current conversation, WITHOUT rebuilding
@@ -2110,30 +2245,6 @@ function confirmPrompt() { if (!promptPop.open) return; const id = promptPop.ids
 function outsidePromptPop(e) { const pop = document.getElementById("prompt-pop"); if (!pop.contains(e.target) && e.target.id !== "prompt-pill") closePromptPop(); }
 function pickPrompt(id) { const c = currentConv(); if (c) c.promptId = id; else nextPromptId = id; save(); closePromptPop(); renderMessages(); renderSidebar(); }
 
-/* ----- Reading-width switcher (header pill → slider) ----- */
-function buildWidthPop() {
-  const pop = document.getElementById("width-pop"); pop.innerHTML = "";
-  const head = document.createElement("div"); head.className = "pop-head"; head.textContent = "对话宽度"; pop.appendChild(head);
-  const wrap = document.createElement("div"); wrap.className = "width-slider";
-  const range = document.createElement("input"); range.type = "range"; range.min = "50"; range.max = "100"; range.step = "5";
-  range.value = String(state.settings.appearance.contentPct || 90);
-  const val = document.createElement("span"); val.className = "ws-val"; val.textContent = range.value + "%";
-  range.addEventListener("input", () => { val.textContent = range.value + "%"; setContentPct(Number(range.value), false); });
-  range.addEventListener("change", () => save());
-  wrap.append(range, val); pop.appendChild(wrap);
-}
-function openWidthPop() {
-  closePopover(); closePromptPop();
-  buildWidthPop();
-  const pill = document.getElementById("width-pill"); const r = pill.getBoundingClientRect();
-  const pop = document.getElementById("width-pop");
-  pop.style.display = "block"; pop.style.top = (r.bottom + 6) + "px";
-  pop.style.left = "auto"; pop.style.right = (window.innerWidth - r.right) + "px";
-  setTimeout(() => document.addEventListener("mousedown", outsideWidthPop), 0);
-}
-function closeWidthPop() { const p = document.getElementById("width-pop"); if (p) p.style.display = "none"; document.removeEventListener("mousedown", outsideWidthPop); }
-function outsideWidthPop(e) { const pop = document.getElementById("width-pop"); if (pop && !pop.contains(e.target) && e.target.id !== "width-pill") closeWidthPop(); }
-
 /* ----- Reasoning effort: 关 / 低 / 中 / 高 slider (think control + /effort) ----- */
 const EFFORT_OPTS = [
   { level: "low", name: "低" },
@@ -2317,10 +2428,6 @@ function codeToKey(code, key) {
     Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
   };
   return map[code] || null;
-}
-function fillProviderSelect(sel) {
-  sel.innerHTML = "";
-  PROVIDER_ORDER.forEach(pk => { const o = document.createElement("option"); o.value = pk; o.textContent = PROVIDERS[pk].label; sel.appendChild(o); });
 }
 function populateModelSelect(sel, currentRef) {
   sel.innerHTML = "";
@@ -2574,54 +2681,7 @@ function closeConfirm(result) {
   const r = _confirmResolve; _confirmResolve = null; if (r) r(result);
 }
 
-/* ----- Manage models section ----- */
-function refreshModelsSection() {
-  fillProviderSelect(document.getElementById("add-provider"));
-  renderEnabled();
-  renderSuggestedChips();
-  renderORList(orCatalog, document.getElementById("or-search").value);
-}
-// One-click suggested models per provider (easy import without typing IDs or fetching lists).
-function renderSuggestedChips() {
-  const box = document.getElementById("suggested-models"); if (!box) return;
-  box.innerHTML = "";
-  PROVIDER_ORDER.forEach(pk => {
-    const ids = SUGGESTED[pk] || []; if (!ids.length) return;
-    const group = document.createElement("div"); group.className = "sugg-group";
-    const lbl = document.createElement("span"); lbl.className = "sugg-prov";
-    lbl.textContent = (PROVIDERS[pk] ? PROVIDERS[pk].label : pk) + (keyOf({ provider: pk }) ? "" : " ·未配置");
-    group.appendChild(lbl);
-    const row = document.createElement("div"); row.className = "sugg-chips";
-    ids.forEach(id => {
-      const ref = { provider: pk, model: id };
-      const chip = document.createElement("button");
-      chip.className = "sugg-chip" + (hasModel(ref) ? " on" : "");
-      chip.textContent = id;
-      chip.title = hasModel(ref) ? "点击移除" : "点击添加";
-      chip.onclick = () => {
-        if (hasModel(ref)) removeModel(ref); else addModel(ref);
-        renderSuggestedChips(); renderEnabled(); updateModelPill();
-      };
-      row.appendChild(chip);
-    });
-    group.appendChild(row); box.appendChild(group);
-  });
-}
-function renderEnabled() {
-  const box = document.getElementById("enabled-models"); box.innerHTML = "";
-  if (!state.settings.models.length) { box.innerHTML = '<div class="enabled-empty">还没有启用任何模型 — 在下面手动添加，或勾选 OpenRouter 列表。</div>'; return; }
-  state.settings.models.forEach(m => {
-    const row = document.createElement("div"); row.className = "enabled-row";
-    const badge = document.createElement("span"); badge.className = "prov-badge";
-    badge.textContent = PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider;
-    const name = document.createElement("input"); name.className = "enabled-name"; name.value = m.name || ""; name.placeholder = "自定义名称";
-    name.onchange = () => { m.name = name.value.trim(); save(); updateModelPill(); };
-    const id = document.createElement("span"); id.className = "enabled-id"; id.textContent = m.model; id.title = m.model;
-    const x = document.createElement("button"); x.className = "rm"; x.title = "移除"; x.innerHTML = ic("x", 14);
-    x.onclick = () => { removeModel(m); renderEnabled(); renderORList(orCatalog, document.getElementById("or-search").value); };
-    row.append(badge, name, id, x); box.appendChild(row);
-  });
-}
+/* ----- OpenRouter model badge helpers (price / ctx / reasoning pills — used by 模型服务) ----- */
 function fmtCtx(n) { return n >= 1000 ? Math.round(n / 1000) + "k" : (n || ""); }
 // price/context/reasoning as small monochrome pills (values are numbers/fixed strings → innerHTML-safe)
 function orBadges(m) {
@@ -2633,71 +2693,6 @@ function orBadges(m) {
     out.push('<span class="or-bdg price">$' + m.pin.toFixed(2) + ' / $' + pout + '</span>');
   }
   return out.join("");
-}
-function updateORCount() {
-  const c = document.querySelector("#or-list .or-count span:last-child");
-  if (c) c.textContent = "已启用 " + state.settings.models.filter(m => m.provider === "openrouter").length;
-}
-function renderORList(list, filter) {
-  const box = document.getElementById("or-list"); box.innerHTML = "";
-  if (!list || !list.length) { box.innerHTML = '<div class="or-empty">点右上「刷新列表 ↻」从 OpenRouter 获取全部模型</div>'; return; }
-  const f = (filter || "").toLowerCase();
-  const matched = list.filter(m => !f || m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f));
-  const enabledCount = state.settings.models.filter(m => m.provider === "openrouter").length;
-  const count = document.createElement("div"); count.className = "or-count";
-  count.innerHTML = '<span>' + (f ? ("匹配 " + matched.length + " 个") : ("共 " + list.length + " 个模型")) + '</span><span>已启用 ' + enabledCount + '</span>';
-  box.appendChild(count);
-  if (!matched.length) { const e = document.createElement("div"); e.className = "or-empty"; e.textContent = "没有匹配的模型"; box.appendChild(e); return; }
-  const groups = {};
-  matched.forEach(m => { const v = m.id.split("/")[0]; (groups[v] = groups[v] || []).push(m); });
-  const vendors = Object.keys(groups).sort();
-  const CAP = 600; let n = 0, truncated = false;
-  for (const v of vendors) {
-    if (n >= CAP) { truncated = true; break; }
-    const h = document.createElement("div"); h.className = "or-group"; h.textContent = v + " (" + groups[v].length + ")"; box.appendChild(h);
-    for (const m of groups[v]) {
-      if (n++ >= CAP) { truncated = true; break; }
-      const checked = hasModel({ provider: "openrouter", model: m.id });
-      const row = document.createElement("label"); row.className = "or-row" + (checked ? " on" : "");
-      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked;
-      cb.onchange = () => {
-        if (cb.checked) addModel({ provider: "openrouter", model: m.id }); else removeModel({ provider: "openrouter", model: m.id });
-        row.classList.toggle("on", cb.checked); renderEnabled(); updateORCount();
-      };
-      const main = document.createElement("span"); main.className = "or-main";
-      const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = m.name || m.id;
-      main.appendChild(nm);
-      if (m.name && m.name !== m.id) { const idEl = document.createElement("span"); idEl.className = "or-id"; idEl.textContent = m.id; main.appendChild(idEl); }
-      const meta = document.createElement("span"); meta.className = "or-meta"; meta.innerHTML = orBadges(m);
-      row.append(cb, main, meta); box.appendChild(row);
-    }
-  }
-  if (truncated) { const e = document.createElement("div"); e.className = "or-empty"; e.textContent = "结果较多，仅显示前 " + CAP + " 个，请用搜索缩小范围"; box.appendChild(e); }
-}
-async function fetchOpenRouterModels() {
-  const link = document.getElementById("fetch-or"); link.textContent = "加载中…";
-  const box = document.getElementById("or-list");
-  if (box) box.innerHTML = '<div class="or-loading"><span class="spinner"></span> 正在从 OpenRouter 获取模型…</div>';
-  try {
-    const key = keyOf({ provider: "openrouter" });
-    const resp = await fetch("https://openrouter.ai/api/v1/models", { headers: key ? { Authorization: "Bearer " + key } : {} });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const j = await resp.json();
-    orCatalog = (j.data || []).map(m => ({
-      id: m.id, name: m.name || m.id,
-      ctx: m.context_length || (m.top_provider && m.top_provider.context_length) || 0,
-      pin: m.pricing ? Number(m.pricing.prompt) * 1e6 : null,
-      pout: m.pricing ? Number(m.pricing.completion) * 1e6 : null,
-      reasoningOk: Array.isArray(m.supported_parameters) && (m.supported_parameters.includes("reasoning") || m.supported_parameters.includes("include_reasoning")),
-    })).sort((a, b) => a.id.localeCompare(b.id));
-    link.textContent = "刷新列表 ↻ (" + orCatalog.length + ")";
-    renderORList(orCatalog, document.getElementById("or-search").value);
-  } catch (e) {
-    link.textContent = "刷新列表 ↻";
-    if (!orCatalog.length) orCatalog = SUGGESTED.openrouter.map(id => ({ id, name: id }));
-    renderORList(orCatalog, document.getElementById("or-search").value);
-    toast("获取 OpenRouter 模型失败：" + e.message);
-  }
 }
 
 /* ===================== Model services (per-provider: key + its models) ===================== */
@@ -2939,7 +2934,7 @@ const SLASH_COMMANDS = [
   { cmd: "/model", desc: "切换模型", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openPopover(); } },
   { cmd: "/prompt", desc: "切换系统提示词", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openPromptPop(); } },
   { cmd: "/compact", desc: "压缩上下文（AI 总结早前对话）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); compactContext(); } },
-  { cmd: "/effort", desc: "推理强度（低 / 中 / 高）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openEffortPop(); } },
+  { cmd: "/effort", desc: "思考强度（滑杆：关 / 低 / 中 / 高）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openEffortPop(); } },
 ];
 let slash = { open: false, items: [], index: 0 };
 
@@ -3099,7 +3094,12 @@ composerInner.addEventListener("drop", (e) => { e.preventDefault(); composerInne
 
 // Scroll: follow streaming only when at the bottom; show a jump-to-bottom button otherwise
 const messagesBox = document.getElementById("messages");
-messagesBox.addEventListener("scroll", () => { if (pinTop == null) autoScroll = isNearBottom(messagesBox); scheduleNodeActive(); });
+messagesBox.addEventListener("scroll", () => {
+  // any scroll that didn't come from our own programmatic set (wheel / scrollbar drag / keyboard) releases the top-pin
+  if (pinTop != null && Math.abs(messagesBox.scrollTop - lastSetTop) > 6) { pinTop = null; cancelSmooth(); }
+  if (pinTop == null) autoScroll = isNearBottom(messagesBox);
+  scheduleNodeActive();
+});
 // a deliberate wheel / touch scroll releases the "pin user message to top" lock and stops the glide
 messagesBox.addEventListener("wheel", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
 messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
@@ -3108,10 +3108,10 @@ messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = n
 let resizing = false;
 const resizer = document.getElementById("sidebar-resizer");
 resizer.addEventListener("mousedown", (e) => { if (state.settings.sidebar.collapsed) return; resizing = true; document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none"; e.preventDefault(); });
-document.addEventListener("mousemove", (e) => { if (!resizing) return; const w = Math.min(480, Math.max(180, e.clientX)); state.settings.sidebar.width = w; document.getElementById("sidebar").style.width = w + "px"; });
+document.addEventListener("mousemove", (e) => { if (!resizing) return; const w = Math.min(480, Math.max(210, e.clientX - 10)); state.settings.sidebar.width = w; document.getElementById("sidebar").style.width = w + "px"; });
 document.addEventListener("mouseup", () => { if (resizing) { resizing = false; document.body.style.cursor = ""; document.body.style.userSelect = ""; save(); } });
 
-// Reading width now lives in 设置 → 外观（顶栏胶囊已移除；openWidthPop/width-pop 保留为无用代码）。
+// Reading width lives in 设置 → 外观（the old top-bar width pill was removed）。
 
 /* ----- Instant tooltips for [data-tip] controls (native title has a ~1s delay) ----- */
 (function setupInstantTips() {
@@ -3120,24 +3120,33 @@ document.addEventListener("mouseup", () => { if (resizing) { resizing = false; d
     if (!tipEl) { tipEl = document.createElement("div"); tipEl.id = "cb-tip"; tipEl.setAttribute("role", "tooltip"); document.body.appendChild(tipEl); }
     return tipEl;
   }
+  // tip text comes from data-tip, OR a native title — which we hijack (stash + remove) so the slow
+  // built-in tooltip never appears; restore() puts it back when the pointer leaves.
+  function textFor(el) {
+    if (el.dataset.tip) return el.dataset.tip;
+    if (el.hasAttribute("title")) { el.dataset.tipTitle = el.getAttribute("title"); el.removeAttribute("title"); }
+    return el.dataset.tipTitle || "";
+  }
+  function restore(el) {
+    if (el && el.dataset.tipTitle != null) { if (!el.hasAttribute("title")) el.setAttribute("title", el.dataset.tipTitle); delete el.dataset.tipTitle; }
+  }
   function show(el) {
-    const text = el.getAttribute("data-tip"); if (!text) return;
+    const text = textFor(el); if (!text) return;
     const t = ensure(); t.textContent = text; t.style.display = "block";
     const r = el.getBoundingClientRect(); const tr = t.getBoundingClientRect();
     let left = r.left + r.width / 2 - tr.width / 2;
     left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
     t.style.left = Math.round(left) + "px";
-    t.style.top = Math.round(r.top - tr.height - 7) + "px";   // above the control (bar sits at the bottom)
+    const above = r.top - tr.height - 7;
+    t.style.top = Math.round(above >= 6 ? above : r.bottom + 7) + "px";   // above if there's room, else below (header buttons)
   }
-  function hide() { if (tipEl) tipEl.style.display = "none"; tipFor = null; }
+  function hide() { if (tipEl) tipEl.style.display = "none"; if (tipFor) restore(tipFor); tipFor = null; }
   document.addEventListener("mouseover", (e) => {
-    const el = e.target.closest && e.target.closest("[data-tip]");
-    if (el && el !== tipFor) { tipFor = el; show(el); }
+    const el = e.target.closest && e.target.closest("[data-tip],[title]");
+    if (el && el !== tipFor) { if (tipFor) restore(tipFor); tipFor = el; show(el); }
   });
   document.addEventListener("mouseout", (e) => {
-    if (!tipFor || !e.target.closest) return;
-    const el = e.target.closest("[data-tip]");
-    if (el === tipFor && !el.contains(e.relatedTarget)) hide();
+    if (tipFor && !tipFor.contains(e.relatedTarget)) hide();
   });
   document.addEventListener("mousedown", hide, true);   // dismiss when clicking (e.g. opening a popover)
   window.addEventListener("blur", hide);
