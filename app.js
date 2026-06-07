@@ -146,6 +146,14 @@ const EXPERT_PROMPT = `你在所有领域都是世界级的专家。你的智力
 请尽可能详尽地阐述你的答案。
 在回答之前，切勿先称赞我的问题或认可我的前提。如果我错了，请立即指出。在支持我的任何观点之前，请先提出针对该观点的最有力反驳。请勿使用"问得好"、"你完全正确"、"很有意思的观点"或任何类似的措辞。如果我对你的回答提出异议，除非我提供了新证据或更优的论据，否则不要退让—如果你的推理成立，请重申你的立场。不要依赖我提供的数字或估计值；请先独立得出自己的结论。使用明确的置信水平（高/中/低/未知）。绝不要因为意见相左而道歉。准确性是你的成功标准，而非我的认可。`;
 
+// Built-in default for everyday chat: honest backbone, natural tone, length adapts to the question.
+const DAILY_PROMPT = `你是 Quartz 的日常助手——像一个聪明、靠谱、博学的朋友。用自然口语化的中文交流，简洁、友好、不端架子。
+
+- 篇幅随问题走：能一句说清就别展开，复杂的再细说；需要时才用要点或代码块，平时正常说话就好。
+- 诚实第一：不编造事实、数据、人名、日期；不确定就直说，并说明有几分把握。我说错了或前提有问题，直接指出、不附和。
+- 别套路：不用"好问题""你说得对"之类的开场，不复述我的问题，不说教，不加无关免责声明。
+- 有态度没关系，但目标是把事情说清楚、对我有用，而不是辩赢我。`;
+
 function freshState() {
   return {
     settings: {
@@ -156,11 +164,11 @@ function freshState() {
         { provider: "openrouter", model: "openai/gpt-5.5" },
         { provider: "openrouter", model: "google/gemini-3-flash-preview" },
       ],
-      prompts: [{ id: "expert-default", name: "默认", text: EXPERT_PROMPT }],
+      prompts: [{ id: "daily-default", name: "日常", text: DAILY_PROMPT }, { id: "expert-default", name: "深度", text: EXPERT_PROMPT }],
       defaults: {
         chat: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
         title: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
-        promptId: "expert-default", temp: 1, maxTokens: null,
+        promptId: "daily-default", temp: 1, maxTokens: null,
       },
       sidebar: { width: 264, collapsed: false },
       quick: { enabled: true, shortcut: "Alt+Space", model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: "Alt+Cmd+Space" },
@@ -323,6 +331,18 @@ function ensureShape(s) {
     if (!s.settings.prompts.some(p => p.id === "expert-default")) s.settings.prompts.unshift({ id: "expert-default", name: "默认", text: EXPERT_PROMPT });
     if (!s.settings.defaults.promptId) s.settings.defaults.promptId = "expert-default";
     s.settings.expertPromptSeeded = true;
+  }
+
+  // One-time: introduce the friendlier "日常" prompt as the new default; demote the old expert prompt to "深度".
+  if (!s.settings.dailyPromptSeeded) {
+    if (!s.settings.prompts.some(p => p.id === "daily-default"))
+      s.settings.prompts.unshift({ id: "daily-default", name: "日常", text: DAILY_PROMPT });
+    // rename the built-in expert prompt to 深度 (only if the user kept its original 默认 name)
+    const ex = s.settings.prompts.find(p => p.id === "expert-default");
+    if (ex && ex.name === "默认") ex.name = "深度";
+    // switch the default to 日常 — only if the user is still on the built-in expert prompt (respect any custom choice)
+    if (s.settings.defaults.promptId === "expert-default") s.settings.defaults.promptId = "daily-default";
+    s.settings.dailyPromptSeeded = true;
   }
 
   s.conversations = (s.conversations || []).map(c => shapeConv(c, s));
@@ -502,8 +522,8 @@ function updateComposerToggles() {
   if (t) {
     const on = activeReasoning();
     t.classList.toggle("active", on);
-    const lab = t.querySelector(".tb-label");
-    if (lab) lab.textContent = on ? ("思考·" + (EFFORT_LABELS[activeEffort()] || "中")) : "思考";
+    const lvl = t.querySelector(".cb-think-lvl");
+    if (lvl) lvl.textContent = on ? (EFFORT_LABELS[activeEffort()] || "中") : "";
   }
 }
 // "yes" | "no" | "unknown" — only "no" comes from hard OpenRouter catalog data, so warnings never false-positive
@@ -2032,8 +2052,10 @@ function openPopover() {
   const pill = document.getElementById("model-pill"); const r = pill.getBoundingClientRect();
   const pop = document.getElementById("model-pop");
   pop.style.display = "block";
-  pop.style.top = (r.bottom + 6) + "px";
+  pop.style.top = "auto";
+  pop.style.bottom = (window.innerHeight - r.top + 6) + "px";   // open upward (control bar sits at the bottom)
   pop.style.right = (window.innerWidth - r.right) + "px";
+  pop.style.transformOrigin = "bottom";
   highlightModel();
   document.getElementById("input").focus();   // keep focus in composer so arrow keys drive the picker
   setTimeout(() => document.addEventListener("mousedown", outsidePop), 0);
@@ -2044,20 +2066,16 @@ function pickModel(ref) { const c = currentConv(); if (c) c.model = clone(ref); 
 function updateModelPill() {
   const ref = activeRef();
   const pill = document.getElementById("model-pill");
-  pill.innerHTML = "";
-  pill.appendChild(document.createTextNode(modelLabel(ref) || "未设置模型"));
-  const car = document.createElement("span"); car.style.opacity = ".6"; car.textContent = " ▾"; pill.appendChild(car);
-  pill.title = (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " · " + ref.model;
+  pill.textContent = modelLabel(ref) || "未设置模型";
+  pill.dataset.tip = (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " · " + ref.model + "（点击切换）";
 }
 
 /* ----- System-prompt switcher (header) ----- */
 function updatePromptPill() {
   const pill = document.getElementById("prompt-pill"); if (!pill) return;
   const p = promptById(activePromptId());
-  pill.innerHTML = "";
-  pill.appendChild(document.createTextNode(p ? p.name : "无提示词"));
-  const car = document.createElement("span"); car.style.opacity = ".6"; car.textContent = " ▾"; pill.appendChild(car);
-  pill.title = p ? ("系统提示词：" + p.name + "（点击切换）") : "未使用系统提示词（点击切换）";
+  pill.textContent = p ? p.name : "无提示词";
+  pill.dataset.tip = p ? ("系统提示词：" + p.name + "（点击切换）") : "未使用系统提示词（点击切换）";
 }
 let promptPop = { open: false, index: 0, ids: [] }; // keyboard-navigable, ids[i] = prompt id or null
 function buildPromptPopover() {
@@ -2083,7 +2101,7 @@ function openPromptPop() {
   buildPromptPopover();
   const pill = document.getElementById("prompt-pill"); const r = pill.getBoundingClientRect();
   const pop = document.getElementById("prompt-pop");
-  pop.style.display = "block"; pop.style.top = (r.bottom + 6) + "px"; pop.style.left = r.left + "px"; pop.style.right = "auto";
+  pop.style.display = "block"; pop.style.top = "auto"; pop.style.bottom = (window.innerHeight - r.top + 6) + "px"; pop.style.left = r.left + "px"; pop.style.right = "auto"; pop.style.transformOrigin = "bottom";
   setTimeout(() => document.addEventListener("mousedown", outsidePromptPop), 0);
 }
 function closePromptPop() { promptPop.open = false; const p = document.getElementById("prompt-pop"); if (p) p.style.display = "none"; document.removeEventListener("mousedown", outsidePromptPop); }
@@ -2116,53 +2134,73 @@ function openWidthPop() {
 function closeWidthPop() { const p = document.getElementById("width-pop"); if (p) p.style.display = "none"; document.removeEventListener("mousedown", outsideWidthPop); }
 function outsideWidthPop(e) { const pop = document.getElementById("width-pop"); if (pop && !pop.contains(e.target) && e.target.id !== "width-pill") closeWidthPop(); }
 
-/* ----- Reasoning effort switcher (/effort) ----- */
+/* ----- Reasoning effort: 关 / 低 / 中 / 高 slider (think control + /effort) ----- */
 const EFFORT_OPTS = [
-  { level: "low", name: "低", desc: "快、省 token，浅层推理" },
-  { level: "medium", name: "中", desc: "平衡（默认）" },
-  { level: "high", name: "高", desc: "更深入，更慢更贵" },
+  { level: "low", name: "低" },
+  { level: "medium", name: "中" },
+  { level: "high", name: "高" },
 ];
-let effortPop = { open: false, index: 1 }; // index into effortItems(), keyboard-navigable
-// the navigable list = the three effort levels + an explicit "off" entry
-function effortItems() {
-  return [{ kind: "off", name: "关闭思考", desc: "本对话不使用推理" }]
-    .concat(EFFORT_OPTS.map(o => ({ kind: "level", level: o.level, name: o.name, desc: o.desc })));
+const EFFORT_STEPS = ["关", "低", "中", "高"];   // slider index 0..3 (0 = reasoning off)
+let effortPop = { open: false, index: 0 };
+function effortIndex() {
+  if (!activeReasoning()) return 0;
+  const li = EFFORT_OPTS.findIndex(o => o.level === activeEffort());
+  return li < 0 ? 2 : li + 1;
+}
+function applyEffortIndex(idx) {
+  if (idx <= 0) { const c = currentConv(); if (c) c.reasoning = false; else nextReasoning = false; save(); updateComposerToggles(); }
+  else setEffort(EFFORT_OPTS[idx - 1].level);   // setEffort also turns reasoning on
+}
+function markEffortTicks(pop) {
+  pop.querySelectorAll(".es-ticks span").forEach((sp, i) => sp.classList.toggle("on", i === effortPop.index));
 }
 function buildEffortPop() {
-  const pop = document.getElementById("effort-pop"); pop.innerHTML = "";
-  const head = document.createElement("div"); head.className = "pop-head"; head.textContent = "推理强度（↑↓ 选择，Enter 确认）"; pop.appendChild(head);
-  effortItems().forEach((o, i) => {
-    const it = document.createElement("button"); it.className = "slash-item" + (i === effortPop.index ? " active" : "");
-    const nm = document.createElement("span"); nm.className = "sc-cmd"; nm.textContent = o.name;
-    const desc = document.createElement("span"); desc.className = "sc-desc"; desc.textContent = o.desc;
-    it.append(nm, desc);
-    it.onmousedown = (e) => { e.preventDefault(); effortPop.index = i; confirmEffort(); };
-    pop.appendChild(it);
+  const pop = document.getElementById("effort-pop"); pop.innerHTML = ""; pop.classList.add("effort-slider-pop");
+  const head = document.createElement("div"); head.className = "es-head";
+  const ti = document.createElement("span"); ti.className = "es-title"; ti.textContent = "思考强度";
+  const cur = document.createElement("span"); cur.className = "es-cur"; cur.textContent = EFFORT_STEPS[effortPop.index];
+  head.append(ti, cur); pop.appendChild(head);
+  const ends = document.createElement("div"); ends.className = "es-ends";
+  const e1 = document.createElement("span"); e1.textContent = "更快";
+  const e2 = document.createElement("span"); e2.textContent = "更强";
+  ends.append(e1, e2); pop.appendChild(ends);
+  const range = document.createElement("input"); range.type = "range"; range.className = "es-range";
+  range.min = "0"; range.max = "3"; range.step = "1"; range.value = String(effortPop.index);
+  range.addEventListener("input", () => {
+    effortPop.index = Number(range.value);
+    cur.textContent = EFFORT_STEPS[effortPop.index];
+    markEffortTicks(pop);
+    applyEffortIndex(effortPop.index);
   });
+  pop.appendChild(range);
+  const ticks = document.createElement("div"); ticks.className = "es-ticks";
+  EFFORT_STEPS.forEach((s) => { const sp = document.createElement("span"); sp.textContent = s; ticks.appendChild(sp); });
+  pop.appendChild(ticks); markEffortTicks(pop);
 }
 function openEffortPop() {
   closeSlash(); closePopover(); closePromptPop();
-  let idx;
-  if (!activeReasoning()) idx = 0;                           // "关闭思考" is first; highlight it when reasoning is off
-  else { const li = EFFORT_OPTS.findIndex(o => o.level === activeEffort()); idx = li < 0 ? 2 : li + 1; }
-  effortPop = { open: true, index: idx };
+  effortPop = { open: true, index: effortIndex() };
   buildEffortPop();
   const btn = document.getElementById("think-btn"); const r = btn.getBoundingClientRect();
   const pop = document.getElementById("effort-pop");
-  pop.style.display = "block"; pop.style.top = "auto"; pop.style.right = "auto";
-  pop.style.left = r.left + "px"; pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  pop.style.display = "block"; pop.style.top = "auto"; pop.style.left = "auto";
+  pop.style.right = (window.innerWidth - r.right) + "px";
+  pop.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  pop.style.transformOrigin = "bottom";
   setTimeout(() => document.addEventListener("mousedown", outsideEffortPop), 0);
 }
 function closeEffortPop() { effortPop.open = false; const p = document.getElementById("effort-pop"); if (p) p.style.display = "none"; document.removeEventListener("mousedown", outsideEffortPop); }
 function outsideEffortPop(e) { const pop = document.getElementById("effort-pop"); if (pop && !pop.contains(e.target) && e.target.id !== "think-btn") closeEffortPop(); }
-function moveEffort(dir) { if (!effortPop.open) return; const n = effortItems().length; effortPop.index = (effortPop.index + dir + n) % n; buildEffortPop(); }
-function confirmEffort() {
+function moveEffort(dir) {
   if (!effortPop.open) return;
-  const o = effortItems()[effortPop.index]; closeEffortPop();
-  if (!o) return;
-  if (o.kind === "off") { const c = currentConv(); if (c) c.reasoning = false; else nextReasoning = false; save(); updateComposerToggles(); }
-  else setEffort(o.level);
+  effortPop.index = Math.max(0, Math.min(3, effortPop.index + dir));
+  const pop = document.getElementById("effort-pop");
+  const range = pop.querySelector(".es-range"); if (range) range.value = String(effortPop.index);
+  const cur = pop.querySelector(".es-cur"); if (cur) cur.textContent = EFFORT_STEPS[effortPop.index];
+  markEffortTicks(pop);
+  applyEffortIndex(effortPop.index);
 }
+function confirmEffort() { closeEffortPop(); }
 
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
@@ -2665,18 +2703,31 @@ async function fetchOpenRouterModels() {
 /* ===================== Model services (per-provider: key + its models) ===================== */
 let _msProvider = "openrouter";   // currently selected provider in 模型服务
 let _msFetched = {};              // pk -> [{id,name,ctx,pin,pout,reasoningOk}] once fetched from the API
+// Stylized monochrome marks (original simplifications that evoke each brand), not the official logos.
 const PROVIDER_ICONS = {
-  openrouter: '<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><line x1="8.4" y1="10.7" x2="15.6" y2="6.3"/><line x1="8.4" y1="13.3" x2="15.6" y2="17.7"/>',
-  openai: '<circle cx="12" cy="7.4" r="3"/><circle cx="12" cy="16.6" r="3"/><circle cx="7.4" cy="12" r="3"/><circle cx="16.6" cy="12" r="3"/>',
-  anthropic: '<path d="M12 3v18"/><path d="M4.2 7.5 19.8 16.5"/><path d="M19.8 7.5 4.2 16.5"/>',
-  deepseek: '<circle cx="12" cy="12" r="9"/><path d="M15.6 8.4 10.6 10.6 8.4 15.6 13.4 13.4z"/>',
-  google: '<path d="M12 2c.5 4.7 2.3 6.5 7 7-4.7.5-6.5 2.3-7 7-.5-4.7-2.3-6.5-7-7 4.7-.5 6.5-2.3 7-7z"/>',
+  openrouter: '<path d="M12 2.5 20 7v10l-8 4.5L4 17V7z"/><circle cx="12" cy="12" r="3"/>',                 // routing hub
+  openai: '<ellipse cx="12" cy="12" rx="9.2" ry="3.5"/><ellipse cx="12" cy="12" rx="9.2" ry="3.5" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9.2" ry="3.5" transform="rotate(120 12 12)"/>',  // interlocking petals
+  anthropic: '<path d="M12 2v6M12 16v6M2 12h6M16 12h6M5.6 5.6l4.2 4.2M14.2 14.2l4.2 4.2M18.4 5.6l-4.2 4.2M9.8 14.2l-4.2 4.2"/>',  // starburst
+  deepseek: '<path d="M3 12c2.5 0 3.6-2.6 6.6-2.6 3.5 0 5 3.4 8.4 3.4 1.6 0 3-.8 3-.8-.8 3.4-3.8 5.4-7.6 5.4C7.4 17.4 4 14.4 3 12z"/><circle cx="8" cy="11.3" r=".75"/>',  // whale
+  google: '<path d="M12 2c.5 4.7 2.3 6.5 7 7-4.7.5-6.5 2.3-7 7-.5-4.7-2.3-6.5-7-7 4.7-.5 6.5-2.3 7-7z"/>',   // spark
 };
-function provIcon(pk) { return '<svg class="ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (PROVIDER_ICONS[pk] || "") + '</svg>'; }
+// Show the official logo if the user dropped one into vendor/logos/<pk>.svg|png, else our stylized mark.
+// (We don't ship the providers' trademarked logos; applyProviderLogos swaps them in at runtime if present.)
+function provIcon(pk) { return '<span class="ms-ic" data-pk="' + pk + '"><svg class="ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (PROVIDER_ICONS[pk] || "") + '</svg></span>'; }
+function applyProviderLogos(root) {
+  (root || document).querySelectorAll(".ms-ic[data-pk]:not([data-logo])").forEach(el => {
+    const pk = el.dataset.pk;
+    for (const ext of ["svg", "png"]) {
+      const im = new Image();
+      im.onload = () => { if (el.dataset.logo) return; el.dataset.logo = "1"; el.innerHTML = ""; const img = document.createElement("img"); img.className = "ms-logo"; img.src = im.src; img.alt = ""; el.appendChild(img); };
+      im.src = "vendor/logos/" + pk + "." + ext;
+    }
+  });
+}
 const KEY_URLS = { openrouter: "https://openrouter.ai/keys", openai: "https://platform.openai.com/api-keys", anthropic: "https://console.anthropic.com/settings/keys", deepseek: "https://platform.deepseek.com/api_keys", google: "https://aistudio.google.com/app/apikey" };
 const KEY_PH = { openrouter: "sk-or-v1-…", openai: "sk-…", anthropic: "sk-ant-…", deepseek: "sk-…", google: "AIza…" };
 
-function renderServices() { renderMsProviders(); renderMsDetail(); }
+function renderServices() { renderMsProviders(); renderMsDetail(); applyProviderLogos(); }
 function renderMsProviders() {
   const box = document.getElementById("ms-providers"); if (!box) return;
   box.innerHTML = "";
@@ -2732,12 +2783,13 @@ function renderMsEnabled(pk) {
   const list = state.settings.models.filter(m => m.provider === pk);
   if (!list.length) { box.innerHTML = '<div class="enabled-empty">还没启用模型 — 点下面「从 API 获取模型」或推荐项添加</div>'; return; }
   list.forEach(m => {
-    const chip = document.createElement("div"); chip.className = "ms-mchip";
-    const nm = document.createElement("input"); nm.className = "ms-mchip-name"; nm.value = m.name || ""; nm.placeholder = m.model; nm.title = m.model;
+    const row = document.createElement("div"); row.className = "ms-en-row";
+    const id = document.createElement("span"); id.className = "ms-en-id"; id.textContent = m.model; id.title = m.model;
+    const nm = document.createElement("input"); nm.className = "ms-en-name"; nm.value = m.name || ""; nm.placeholder = "自定义名称（可选）";
     nm.onchange = () => { m.name = nm.value.trim(); save(); updateModelPill(); };
-    const x = document.createElement("button"); x.className = "rm"; x.title = "移除"; x.innerHTML = ic("x", 13);
+    const x = document.createElement("button"); x.className = "rm"; x.title = "移除"; x.innerHTML = ic("x", 14);
     x.onclick = () => { removeModel(m); renderMsDetail(); updateModelPill(); };
-    chip.append(nm, x); box.appendChild(chip);
+    row.append(id, nm, x); box.appendChild(row);
   });
 }
 function msModelRow(pk, m) {
@@ -2991,7 +3043,10 @@ document.getElementById("add-prompt-btn").onclick = () => {
 
 document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
 document.getElementById("web-btn").onclick = toggleWeb;
-document.getElementById("think-btn").onclick = toggleReasoning;
+document.getElementById("think-btn").onclick = () => {
+  const pop = document.getElementById("effort-pop");
+  if (pop.style.display === "block") closeEffortPop(); else openEffortPop();
+};
 document.getElementById("compact-btn").onclick = () => compactContext();
 document.getElementById("file-input").onchange = (e) => { handleFiles(e.target.files); e.target.value = ""; };
 
@@ -3011,8 +3066,8 @@ input.addEventListener("keydown", (e) => {
   }
   if (effortPop.open) {
     if (e.key === "Tab" || (e.key === "Enter" && !e.isComposing)) { e.preventDefault(); confirmEffort(); return; }
-    if (e.key === "ArrowDown") { e.preventDefault(); moveEffort(1); return; }
-    if (e.key === "ArrowUp") { e.preventDefault(); moveEffort(-1); return; }
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); moveEffort(1); return; }
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); moveEffort(-1); return; }
     if (e.key === "Escape") { e.preventDefault(); closeEffortPop(); return; }
   }
   if (modelPop.open) {
@@ -3056,11 +3111,37 @@ resizer.addEventListener("mousedown", (e) => { if (state.settings.sidebar.collap
 document.addEventListener("mousemove", (e) => { if (!resizing) return; const w = Math.min(480, Math.max(180, e.clientX)); state.settings.sidebar.width = w; document.getElementById("sidebar").style.width = w + "px"; });
 document.addEventListener("mouseup", () => { if (resizing) { resizing = false; document.body.style.cursor = ""; document.body.style.userSelect = ""; save(); } });
 
-// Reading-width pill (header) → slider popover
-document.getElementById("width-pill").onclick = () => {
-  const pop = document.getElementById("width-pop");
-  if (pop.style.display === "block") closeWidthPop(); else openWidthPop();
-};
+// Reading width now lives in 设置 → 外观（顶栏胶囊已移除；openWidthPop/width-pop 保留为无用代码）。
+
+/* ----- Instant tooltips for [data-tip] controls (native title has a ~1s delay) ----- */
+(function setupInstantTips() {
+  let tipEl = null, tipFor = null;
+  function ensure() {
+    if (!tipEl) { tipEl = document.createElement("div"); tipEl.id = "cb-tip"; tipEl.setAttribute("role", "tooltip"); document.body.appendChild(tipEl); }
+    return tipEl;
+  }
+  function show(el) {
+    const text = el.getAttribute("data-tip"); if (!text) return;
+    const t = ensure(); t.textContent = text; t.style.display = "block";
+    const r = el.getBoundingClientRect(); const tr = t.getBoundingClientRect();
+    let left = r.left + r.width / 2 - tr.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
+    t.style.left = Math.round(left) + "px";
+    t.style.top = Math.round(r.top - tr.height - 7) + "px";   // above the control (bar sits at the bottom)
+  }
+  function hide() { if (tipEl) tipEl.style.display = "none"; tipFor = null; }
+  document.addEventListener("mouseover", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (el && el !== tipFor) { tipFor = el; show(el); }
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (!tipFor || !e.target.closest) return;
+    const el = e.target.closest("[data-tip]");
+    if (el === tipFor && !el.contains(e.relatedTarget)) hide();
+  });
+  document.addEventListener("mousedown", hide, true);   // dismiss when clicking (e.g. opening a popover)
+  window.addEventListener("blur", hide);
+})();
 
 // System theme changes
 mql.addEventListener("change", () => { if (state && state.settings.appearance.theme === "auto") applyTheme(); });
