@@ -118,13 +118,13 @@ function animateScrollTo(box, target, duration) {
   const start = box.scrollTop;
   const end = Math.max(0, Math.min(target, max));
   const dist = end - start;
-  if (Math.abs(dist) < 1 || duration <= 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { box.scrollTop = end; return; }
+  if (Math.abs(dist) < 1 || duration <= 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { box.scrollTop = end; lastSetTop = box.scrollTop; return; }
   const t0 = performance.now();
   const ease = (t) => 1 - Math.pow(1 - t, 3);   // ease-out cubic
   const step = (now) => {
     const p = Math.min(1, (now - t0) / duration);
-    box.scrollTop = start + dist * ease(p);
-    if (p < 1) jumpAnim = requestAnimationFrame(step); else { box.scrollTop = end; jumpAnim = null; }
+    box.scrollTop = start + dist * ease(p); lastSetTop = box.scrollTop;
+    if (p < 1) jumpAnim = requestAnimationFrame(step); else { box.scrollTop = end; lastSetTop = box.scrollTop; jumpAnim = null; }
   };
   jumpAnim = requestAnimationFrame(step);
 }
@@ -134,22 +134,6 @@ function applyAutoScroll(box) {
   else if (autoScroll) smoothFollow(box, box.scrollHeight - box.clientHeight);
   else cancelSmooth();
 }
-// Restore scrollTop to `target` after a full re-render. .msg-row has content-visibility:auto, so off-screen
-// rows briefly report only their placeholder height — scrollHeight is too small for a frame or two and a
-// plain clamp snaps us near the top. Re-assert the target each frame until the content is tall enough to
-// honor it (or ~45 frames pass); bail out the moment the user scrolls so we never fight them.
-function restoreScroll(box, target) {
-  let tries = 0, applied = -1;
-  const apply = () => {
-    if (applied >= 0 && Math.abs(box.scrollTop - applied) > 6) return;   // user took over — stop
-    const max = Math.max(0, box.scrollHeight - box.clientHeight);
-    box.scrollTop = Math.min(target, max);
-    applied = box.scrollTop; lastSetTop = applied;
-    if (max < target - 1 && tries++ < 45) requestAnimationFrame(apply);
-  };
-  apply();
-}
-
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 
@@ -921,7 +905,7 @@ function buildConvEl(c) {
   if (pr) {
     const tag = el.querySelector(".conv-tag");
     const pill = document.createElement("span"); pill.className = "cpill"; pill.textContent = pr.name;
-    tag.appendChild(pill); tag.title = "系统提示词：" + pr.name;
+    tag.appendChild(pill);
   }
   el.onclick = () => { state.currentId = c.id; editingIndex = null; autoScroll = true; nodePinned = null; save(); renderAll(); };
   el.querySelector(".pin").onclick = (e) => { e.stopPropagation(); togglePin(c); };
@@ -1232,7 +1216,6 @@ function renderMessages() {
   const titleEl = document.getElementById("conv-title");
   if (!titleEl.isContentEditable) {   // don't clobber the field while the user is editing the title inline
     titleEl.textContent = conv ? (conv.title || "新对话") : "Quartz";
-    titleEl.title = conv ? (conv.title || "新对话") : "";   // full title on hover when the edge fades
     evalTitleFade();
   }
 
@@ -1269,7 +1252,7 @@ function renderMessages() {
     if (i + 1 === boundary) box.appendChild(compactionMarker(conv));
   });
   enhanceCode(box);
-  if (autoScroll) box.scrollTop = box.scrollHeight;
+  if (autoScroll) { box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop; }
   updateScrollBtn();
   updateNodeActive();
   applySearchHighlight();   // highlight + reveal the find bar when a sidebar search is active
@@ -1913,7 +1896,7 @@ async function runCompletion(conv, opts) {
   const um = conv.messages[conv.messages.length - 2];
   restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
     ? { text: um.content || "", attachments: Array.isArray(um.attachments) ? um.attachments.slice() : [] } : null;
-  pinTop = null; autoScroll = false; nodePinned = null;   // we pin the user's message ourselves; don't follow bottom
+  pinTop = null; autoScroll = false; nodePinned = null;   // the pin (below) drives the streaming scroll
   save(); renderMessages(); renderSidebar();
 
   const box = document.getElementById("messages");
@@ -1923,14 +1906,14 @@ async function runCompletion(conv, opts) {
   const reasoningBody = row.querySelector(".reasoning-body");
   contentEl.innerHTML = ""; appendStreamLoader(contentEl);
 
-  // Pin this turn's user message ~20% down from the top (not glued to the very top): a little breathing
-  // room above, ~80% of the viewport below for the streaming reply. Manual wheel/touch releases the pin.
+  // Auto-scroll the streaming reply, but STOP once the user's prompt reaches ~20% from the top (it stays
+  // visible with the answer filling in below it). Start at the bottom — no jarring jump — and let
+  // applyAutoScroll ease toward min(pinTop, maxScroll): follows the bottom until the prompt hits 20%, then holds.
   let ur = row ? row.previousElementSibling : null;
   while (ur && !ur.classList.contains("msg-row")) ur = ur.previousElementSibling;
-  const pinOffset = Math.round(box.clientHeight * 0.2);
-  pinTop = ur ? Math.max(0, ur.offsetTop - pinOffset) : null;
+  pinTop = ur ? Math.max(0, ur.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
   box.classList.add("streaming");
-  if (pinTop != null) { box.scrollTop = Math.min(pinTop, box.scrollHeight - box.clientHeight); lastSetTop = box.scrollTop; }
+  box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop;
 
   setSending(true); abortController = new AbortController();
   if (conv.webSearch && ref.provider !== "openrouter") toast("联网搜索目前仅 OpenRouter 模型支持，本次未联网");
@@ -2002,14 +1985,14 @@ async function runCompletion(conv, opts) {
     last.vi = last.variants.length - 1;
   }
   save();
-  // keep the reader where they are across the final re-render. NOTE: .msg-row uses content-visibility:auto,
-  // so right after renderMessages() the off-screen rows report only their intrinsic placeholder height —
-  // scrollHeight is briefly too small and a plain clamp would snap the view near the top. restoreScroll()
-  // re-asserts the target across frames until the content has reflowed tall enough.
+  // Final re-render: if the reader was following the stream, land on the true bottom (the whole answer
+  // is visible); otherwise keep them exactly where they had scrolled to.
   const keepTop = box.scrollTop;
+  const wasFollowing = autoScroll;
   pinTop = null;
   renderMessages(); renderSidebar();
-  restoreScroll(box, keepTop);
+  box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
+  lastSetTop = box.scrollTop;
 }
 
 // Update only the header title (+ hover tooltip) for the current conversation, WITHOUT rebuilding
@@ -2020,7 +2003,6 @@ function refreshHeaderTitle(conv) {
   const te = document.getElementById("conv-title");
   if (!te || te.isContentEditable) return;
   te.textContent = conv.title || "新对话";
-  te.title = conv.title || "新对话";
   evalTitleFade();
 }
 // Fade the title's right edge only when it actually overflows the available width.
@@ -2345,13 +2327,14 @@ function switchSection(sec) {
     populateQuickModelSelect();
     const sc = document.getElementById("set-quick-shortcut");
     if (sc) sc.textContent = fmtAccel(state.settings.quick.shortcut || defaultQuick());
+    requestAnimationFrame(() => autoGrowEl(document.getElementById("set-quick-concise"), 360));
   }
   if (sec === "shortcuts") {
     const om = document.getElementById("set-openmain-shortcut");
     if (om) om.textContent = fmtAccel(state.settings.quick.openMainShortcut || defaultOpenMain());
   }
   if (sec === "data") fillDataStats();
-  if (sec === "about") fillAbout();
+  if (sec === "about") { fillAbout(); aboutCheckUpdate(); }
 }
 
 // ----- Data backup / restore -----
@@ -2625,9 +2608,9 @@ function setupSettingsLive() {
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
     const ce = document.getElementById("set-quick-concise");
-    if (ce) ce.addEventListener("input", () => { state.settings.quick.concisePrompt = ce.value; save(); });
+    if (ce) ce.addEventListener("input", () => { state.settings.quick.concisePrompt = ce.value; autoGrowEl(ce, 360); save(); });
     const cr = document.getElementById("quick-concise-reset");
-    if (cr) cr.addEventListener("click", (e) => { e.preventDefault(); state.settings.quick.concisePrompt = QUICK_PROMPT; if (ce) ce.value = QUICK_PROMPT; save(); });
+    if (cr) cr.addEventListener("click", (e) => { e.preventDefault(); state.settings.quick.concisePrompt = QUICK_PROMPT; if (ce) ce.value = QUICK_PROMPT; autoGrowEl(ce, 360); save(); });
   })();
   bindToggle("set-quick-blur-tog", on => { state.settings.quick.closeOnBlur = on; save(); });
   document.getElementById("set-quick-model").addEventListener("change", e => { const v = e.target.value; state.settings.quick.model = (v === "__default__") ? null : parseRefKey(v); save(); });
@@ -2940,12 +2923,16 @@ function renderPromptsList() {
     top.append(name, defWrap, del);
     const ta = document.createElement("textarea"); ta.className = "prompt-text"; ta.rows = 3; ta.value = p.text; ta.placeholder = "系统提示词内容…";
     ta.onchange = () => { p.text = ta.value; save(); };
+    ta.oninput = () => autoGrowEl(ta, 420);
     card.append(top, ta); box.appendChild(card);
+    requestAnimationFrame(() => autoGrowEl(ta, 420));
   });
 }
 
 /* ===================== Input UX ===================== */
 function autoGrow() { const ta = document.getElementById("input"); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 220) + "px"; }
+// Grow a textarea to fit its content (replaces the ugly native resize grip on settings textareas).
+function autoGrowEl(el, max) { if (!el) return; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, max || 460) + "px"; }
 function focusInput() { const el = document.getElementById("input"); if (el) el.focus(); }
 
 /* First-run / idle hints (gray helper text) */
@@ -3131,9 +3118,14 @@ composerInner.addEventListener("drop", (e) => { e.preventDefault(); composerInne
 // Scroll: follow streaming only when at the bottom; show a jump-to-bottom button otherwise
 const messagesBox = document.getElementById("messages");
 messagesBox.addEventListener("scroll", () => {
-  // any scroll that didn't come from our own programmatic set (wheel / scrollbar drag / keyboard) releases the top-pin
-  if (pinTop != null && Math.abs(messagesBox.scrollTop - lastSetTop) > 6) { pinTop = null; cancelSmooth(); }
-  if (pinTop == null) autoScroll = isNearBottom(messagesBox);
+  // The pin is NEVER released here. While answering, the streaming markdown re-renders every chunk and the
+  // browser clamps scrollTop a few px as scrollHeight jitters — indistinguishable from a small user scroll by
+  // delta alone, which used to falsely clear the pin. So the pin is released only by an explicit gesture
+  // (wheel / touchstart, below) or when the answer completes. When un-pinned, sync the bottom-follow flag,
+  // ignoring our own programmatic scrolls (they stay within 6px of lastSetTop).
+  if (pinTop == null && Math.abs(messagesBox.scrollTop - lastSetTop) > 6) {
+    autoScroll = isNearBottom(messagesBox);
+  }
   scheduleNodeActive();
 });
 // a deliberate wheel / touch scroll releases the "pin user message to top" lock and stops the glide
@@ -3284,12 +3276,18 @@ function updateAboutUpdateStatus(s) {
     st === "dev" ? "开发模式不检查更新" : "";
 }
 if (window.chatbox && window.chatbox.onUpdateStatus) window.chatbox.onUpdateStatus(renderUpdatePill);
+// Check for updates from the About page — used by both the manual button and the auto-check on open.
+async function aboutCheckUpdate() {
+  const st = document.getElementById("about-update-status");
+  if (!window.chatbox || !window.chatbox.updateCheck) return;
+  if (st) st.textContent = "正在检查…";
+  try {
+    const r = await window.chatbox.updateCheck();
+    if (r && r.state === "dev" && st) st.textContent = "开发模式不检查更新";
+  } catch (e) { if (st) st.textContent = "检查失败"; }
+}
 { const cu = document.getElementById("about-check-update");
-  if (cu) cu.onclick = async () => {
-    const st = document.getElementById("about-update-status"); if (st) st.textContent = "正在检查…";
-    try { const r = await window.chatbox.updateCheck(); if (r && r.state === "dev" && st) st.textContent = "开发模式不检查更新"; }
-    catch (e) { if (st) st.textContent = "检查失败"; }
-  };
+  if (cu) cu.onclick = aboutCheckUpdate;
 }
 
 // Auto-backup (data safety): a silent, rotating local snapshot WITHOUT API keys. Skipped when nothing
