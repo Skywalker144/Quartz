@@ -20,6 +20,7 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      max-parallel: 1   # serialize the matrix: the two jobs must not race to CREATE the same GitHub release (422 already_exists)
       matrix:
         include:
           - os: macos-14          # Apple Silicon runner; builds a universal binary
