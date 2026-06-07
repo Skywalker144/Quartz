@@ -482,8 +482,8 @@ function onProviderConnected(pk) {
   } else {
     // other providers: make their suggested models one-click available (added below in the chips UI)
   }
-  const sec = document.querySelector('#modal-sections section[data-sec="models"]');
-  if (sec && !sec.classList.contains("hidden")) refreshModelsSection();
+  const sec = document.querySelector('#modal-sections section[data-sec="services"]');
+  if (sec && !sec.classList.contains("hidden")) renderServices();
   populateQuickModelSelect();
 }
 
@@ -785,6 +785,7 @@ const ICON_PATHS = {
   zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
   command: '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>',
 };
 function ic(name, size) { size = size || 16; return '<svg class="ic" viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICON_PATHS[name] || "") + '</svg>'; }
 const PIN_SVG = ic("pin", 13);
@@ -1724,7 +1725,7 @@ async function sendMessage() {
   const atts = pending.slice();
   if (!text && !atts.length) return;
   const ref = activeRef();
-  if (!keyOf(ref)) { openSettings("providers"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
 
   let conv = currentConv();
   if (!conv) { newConversation(); conv = currentConv(); }
@@ -1739,7 +1740,7 @@ async function sendMessage() {
 
 async function runCompletion(conv, opts) {
   const ref = activeRef();
-  if (!keyOf(ref)) { openSettings("providers"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
   conv.model = clone(ref);
   conv.messages.push({ role: "assistant", content: "" });
   // A fresh user send is "restorable": Esc returns the prompt to the input box (not regenerate).
@@ -1883,7 +1884,7 @@ async function compactContext() {
   if (!conv || !conv.messages.length) { toast("当前没有可压缩的对话"); return; }
   if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
   const ref = conv.model || nextModel;
-  if (!keyOf(ref)) { openSettings("providers"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
 
   const start = conv.compaction ? Math.min(conv.compaction.count, conv.messages.length) : 0;
   const toSummarize = conv.messages.slice(start).filter(m => (m.content || "").trim() || (m.attachments || []).length);
@@ -1912,7 +1913,7 @@ async function compactContext() {
 async function regenerateTitle(conv) {
   if (!conv) return;
   const tref = state.settings.defaults.title;
-  if (!keyOf(tref)) { openSettings("providers"); toast("请先配置「话题命名模型」的 API Key"); return; }
+  if (!keyOf(tref)) { _msProvider = tref.provider; openSettings("services"); toast("请先配置「话题命名模型」的 API Key"); return; }
   const text = conv.messages
     .filter(m => (m.content || "").trim() || (m.attachments || []).length)
     .map(m => (m.role === "user" ? "用户" : "助手") + "：" + plainText(m)).join("\n").slice(0, 2000);
@@ -2002,7 +2003,7 @@ function buildModelPopover() {
   });
   if (!any) { const e = document.createElement("div"); e.className = "pop-empty"; e.textContent = "去 设置 → 管理模型 添加模型"; pop.appendChild(e); }
   const foot = document.createElement("button"); foot.className = "pop-foot"; foot.textContent = "⚙ 管理模型…";
-  foot.onclick = () => { closePopover(); openSettings("models"); };
+  foot.onclick = () => { closePopover(); openSettings("services"); };
   pop.appendChild(foot);
 }
 function highlightModel() {
@@ -2166,12 +2167,12 @@ function confirmEffort() {
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); switchSection(section || "providers"); document.getElementById("modal-bg").classList.add("show"); }
+function openSettings(section) { fillSettings(); switchSection(section || "services"); document.getElementById("modal-bg").classList.add("show"); }
 function closeSettings() { document.getElementById("modal-bg").classList.remove("show"); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
   document.querySelectorAll("#modal-sections section").forEach(s => s.classList.toggle("hidden", s.dataset.sec !== sec));
-  if (sec === "models") refreshModelsSection();
+  if (sec === "services") renderServices();
   if (sec === "prompts") refreshPromptsSection();
   if (sec === "defaults") {
     populateModelSelect(document.getElementById("chat-model-sel"), state.settings.defaults.chat);
@@ -2401,7 +2402,7 @@ async function testProvider(pk, btn, status) {
 
 // ---- settings: nav icons + instant-apply wiring; called once at boot ----
 function decorateSettingsNav() {
-  const map = { providers: "key", models: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", about: "info" };
+  const map = { services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", data: "database", about: "info" };
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => {
     const name = map[b.dataset.sec];
     if (name && !b.querySelector(".ic")) b.insertAdjacentHTML("afterbegin", ic(name, 16));
@@ -2661,6 +2662,165 @@ async function fetchOpenRouterModels() {
   }
 }
 
+/* ===================== Model services (per-provider: key + its models) ===================== */
+let _msProvider = "openrouter";   // currently selected provider in 模型服务
+let _msFetched = {};              // pk -> [{id,name,ctx,pin,pout,reasoningOk}] once fetched from the API
+const PROVIDER_ICONS = {
+  openrouter: '<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><line x1="8.4" y1="10.7" x2="15.6" y2="6.3"/><line x1="8.4" y1="13.3" x2="15.6" y2="17.7"/>',
+  openai: '<circle cx="12" cy="7.4" r="3"/><circle cx="12" cy="16.6" r="3"/><circle cx="7.4" cy="12" r="3"/><circle cx="16.6" cy="12" r="3"/>',
+  anthropic: '<path d="M12 3v18"/><path d="M4.2 7.5 19.8 16.5"/><path d="M19.8 7.5 4.2 16.5"/>',
+  deepseek: '<circle cx="12" cy="12" r="9"/><path d="M15.6 8.4 10.6 10.6 8.4 15.6 13.4 13.4z"/>',
+  google: '<path d="M12 2c.5 4.7 2.3 6.5 7 7-4.7.5-6.5 2.3-7 7-.5-4.7-2.3-6.5-7-7 4.7-.5 6.5-2.3 7-7z"/>',
+};
+function provIcon(pk) { return '<svg class="ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (PROVIDER_ICONS[pk] || "") + '</svg>'; }
+const KEY_URLS = { openrouter: "https://openrouter.ai/keys", openai: "https://platform.openai.com/api-keys", anthropic: "https://console.anthropic.com/settings/keys", deepseek: "https://platform.deepseek.com/api_keys", google: "https://aistudio.google.com/app/apikey" };
+const KEY_PH = { openrouter: "sk-or-v1-…", openai: "sk-…", anthropic: "sk-ant-…", deepseek: "sk-…", google: "AIza…" };
+
+function renderServices() { renderMsProviders(); renderMsDetail(); }
+function renderMsProviders() {
+  const box = document.getElementById("ms-providers"); if (!box) return;
+  box.innerHTML = "";
+  PROVIDER_ORDER.forEach(pk => {
+    const b = document.createElement("button");
+    b.className = "ms-prov" + (pk === _msProvider ? " active" : "");
+    const n = state.settings.models.filter(m => m.provider === pk).length;
+    b.innerHTML = '<span class="ms-prov-ic">' + provIcon(pk) + '</span>'
+      + '<span class="ms-prov-name">' + PROVIDERS[pk].label + '</span>'
+      + (n ? '<span class="ms-prov-n">' + n + '</span>' : '')
+      + '<span class="ms-prov-dot' + (keyOf({ provider: pk }) ? ' on' : '') + '"></span>';
+    b.onclick = () => { _msProvider = pk; renderServices(); };
+    box.appendChild(b);
+  });
+}
+function renderMsDetail() {
+  const box = document.getElementById("ms-detail"); if (!box) return;
+  const pk = _msProvider, prov = PROVIDERS[pk], key = keyOf({ provider: pk });
+  box.innerHTML =
+    '<div class="ms-head"><span class="ms-head-ic">' + provIcon(pk) + '</span><h4>' + prov.label + '</h4></div>'
+    + '<div class="ms-field"><label>API Key <a href="' + KEY_URLS[pk] + '" target="_blank">获取 Key ↗</a></label>'
+      + '<div class="key-input-wrap"><input type="password" id="ms-key" placeholder="' + KEY_PH[pk] + '" autocomplete="off" spellcheck="false">'
+      + '<button type="button" class="key-eye" id="ms-eye">' + ic("eye", 16) + '</button></div>'
+      + '<div class="key-row2"><button type="button" class="btn small" id="ms-test">检测</button><span class="key-test-status" id="ms-teststat"></span></div></div>'
+    + '<div class="group-label">已启用的模型</div><div id="ms-enabled" class="ms-enabled"></div>'
+    + '<div class="ms-actions"><button class="btn small" id="ms-fetch">从 API 获取模型 ↻</button>'
+      + '<div class="model-row ms-add-row"><input id="ms-add" placeholder="或手动输入模型 ID 添加"><button class="btn small" id="ms-add-btn">添加</button></div></div>'
+    + '<input id="ms-search" class="ms-search" placeholder="搜索模型…" hidden>'
+    + '<div id="ms-list" class="or-list"></div>';
+  const keyEl = box.querySelector("#ms-key"); keyEl.value = key || "";
+  keyEl.addEventListener("input", () => {
+    const had = !!keyOf({ provider: pk });
+    state.settings.providers[pk] = { key: keyEl.value.trim() };
+    renderMsProviders();
+    if (!had && keyEl.value.trim()) onProviderConnected(pk);
+    save();
+  });
+  const eye = box.querySelector("#ms-eye");
+  eye.onclick = () => { const s = keyEl.type === "password"; keyEl.type = s ? "text" : "password"; eye.innerHTML = ic(s ? "eye-off" : "eye", 16); };
+  box.querySelector("#ms-test").onclick = (e) => testProvider(pk, e.currentTarget, box.querySelector("#ms-teststat"));
+  box.querySelector("#ms-fetch").onclick = () => fetchAndShowModels(pk);
+  const addBtn = box.querySelector("#ms-add-btn"), addIn = box.querySelector("#ms-add");
+  addBtn.onclick = () => { const v = addIn.value.trim(); if (!v) return; addModel({ provider: pk, model: v }); addIn.value = ""; renderMsDetail(); updateModelPill(); };
+  addIn.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); addBtn.click(); } });
+  box.querySelector("#ms-search").addEventListener("input", (e) => renderMsList(pk, e.target.value));
+  if (_msFetched[pk]) { box.querySelector("#ms-search").hidden = false; box.querySelector("#ms-fetch").textContent = "重新获取 ↻ (" + _msFetched[pk].length + ")"; }
+  renderMsEnabled(pk);
+  renderMsList(pk, "");
+}
+function renderMsEnabled(pk) {
+  const box = document.getElementById("ms-enabled"); if (!box) return;
+  box.innerHTML = "";
+  const list = state.settings.models.filter(m => m.provider === pk);
+  if (!list.length) { box.innerHTML = '<div class="enabled-empty">还没启用模型 — 点下面「从 API 获取模型」或推荐项添加</div>'; return; }
+  list.forEach(m => {
+    const chip = document.createElement("div"); chip.className = "ms-mchip";
+    const nm = document.createElement("input"); nm.className = "ms-mchip-name"; nm.value = m.name || ""; nm.placeholder = m.model; nm.title = m.model;
+    nm.onchange = () => { m.name = nm.value.trim(); save(); updateModelPill(); };
+    const x = document.createElement("button"); x.className = "rm"; x.title = "移除"; x.innerHTML = ic("x", 13);
+    x.onclick = () => { removeModel(m); renderMsDetail(); updateModelPill(); };
+    chip.append(nm, x); box.appendChild(chip);
+  });
+}
+function msModelRow(pk, m) {
+  const checked = hasModel({ provider: pk, model: m.id });
+  const row = document.createElement("label"); row.className = "or-row" + (checked ? " on" : "");
+  const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked;
+  cb.onchange = () => {
+    if (cb.checked) addModel({ provider: pk, model: m.id }); else removeModel({ provider: pk, model: m.id });
+    row.classList.toggle("on", cb.checked); renderMsEnabled(pk); renderMsProviders(); updateModelPill();
+  };
+  const main = document.createElement("span"); main.className = "or-main";
+  const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = m.name || m.id; main.appendChild(nm);
+  if (m.name && m.name !== m.id) { const idEl = document.createElement("span"); idEl.className = "or-id"; idEl.textContent = m.id; main.appendChild(idEl); }
+  row.append(cb, main);
+  if (pk === "openrouter") { const meta = document.createElement("span"); meta.className = "or-meta"; meta.innerHTML = orBadges(m); row.appendChild(meta); }
+  return row;
+}
+function renderMsList(pk, filter) {
+  const box = document.getElementById("ms-list"); if (!box) return;
+  box.innerHTML = "";
+  const fetched = _msFetched[pk];
+  if (!fetched) {                                  // not fetched yet → show the recommended chips
+    const ids = SUGGESTED[pk] || [];
+    if (!ids.length) { box.innerHTML = '<div class="or-empty">点「从 API 获取模型」拉取该服务商支持的模型</div>'; return; }
+    const h = document.createElement("div"); h.className = "or-group"; h.textContent = "推荐模型"; box.appendChild(h);
+    ids.forEach(id => box.appendChild(msModelRow(pk, { id: id, name: id })));
+    return;
+  }
+  const f = (filter || "").toLowerCase();
+  const matched = fetched.filter(m => !f || m.id.toLowerCase().includes(f) || (m.name || "").toLowerCase().includes(f));
+  const count = document.createElement("div"); count.className = "or-count";
+  count.innerHTML = '<span>' + (f ? ("匹配 " + matched.length) : ("共 " + fetched.length + " 个")) + '</span><span>已启用 ' + state.settings.models.filter(m => m.provider === pk).length + '</span>';
+  box.appendChild(count);
+  if (!matched.length) { const e = document.createElement("div"); e.className = "or-empty"; e.textContent = "没有匹配的模型"; box.appendChild(e); return; }
+  const CAP = 400; let n = 0, truncated = false;
+  if (pk === "openrouter") {
+    const groups = {}; matched.forEach(m => { const v = m.id.split("/")[0]; (groups[v] = groups[v] || []).push(m); });
+    for (const v of Object.keys(groups).sort()) {
+      if (n >= CAP) { truncated = true; break; }
+      const h = document.createElement("div"); h.className = "or-group"; h.textContent = v + " (" + groups[v].length + ")"; box.appendChild(h);
+      for (const m of groups[v]) { if (n++ >= CAP) { truncated = true; break; } box.appendChild(msModelRow(pk, m)); }
+    }
+  } else {
+    for (const m of matched) { if (n++ >= CAP) { truncated = true; break; } box.appendChild(msModelRow(pk, m)); }
+  }
+  if (truncated) { const e = document.createElement("div"); e.className = "or-empty"; e.textContent = "结果较多，仅显示前 " + CAP + " 个，请用搜索缩小范围"; box.appendChild(e); }
+}
+async function fetchProviderModels(pk) {
+  const prov = PROVIDERS[pk], key = keyOf({ provider: pk });
+  const headers = prov.kind === "anthropic"
+    ? { "x-api-key": key || "", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
+    : (key ? { Authorization: "Bearer " + key } : {});
+  const resp = await fetch(prov.base + "/models", { headers });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const j = await resp.json();
+  const arr = j.data || j.models || [];
+  if (pk === "openrouter") {
+    return arr.map(m => ({
+      id: m.id, name: m.name || m.id,
+      ctx: m.context_length || (m.top_provider && m.top_provider.context_length) || 0,
+      pin: m.pricing ? Number(m.pricing.prompt) * 1e6 : null,
+      pout: m.pricing ? Number(m.pricing.completion) * 1e6 : null,
+      reasoningOk: Array.isArray(m.supported_parameters) && (m.supported_parameters.includes("reasoning") || m.supported_parameters.includes("include_reasoning")),
+    })).sort((a, b) => a.id.localeCompare(b.id));
+  }
+  return arr.map(m => ({ id: m.id || m.name || "", name: m.id || m.name || "" })).filter(m => m.id).sort((a, b) => a.id.localeCompare(b.id));
+}
+async function fetchAndShowModels(pk) {
+  const btn = document.getElementById("ms-fetch"), search = document.getElementById("ms-search"), box = document.getElementById("ms-list");
+  if (btn) { btn.disabled = true; btn.textContent = "获取中…"; }
+  if (box) box.innerHTML = '<div class="or-loading"><span class="spinner"></span> 正在从 ' + PROVIDERS[pk].label + ' 获取模型…</div>';
+  try {
+    _msFetched[pk] = await fetchProviderModels(pk);
+    if (search) search.hidden = false;
+    if (btn) btn.textContent = "重新获取 ↻ (" + _msFetched[pk].length + ")";
+    renderMsList(pk, search ? search.value : "");
+  } catch (e) {
+    if (btn) btn.textContent = "从 API 获取模型 ↻";
+    renderMsList(pk, "");
+    toast("获取模型失败：" + e.message + (keyOf({ provider: pk }) ? "" : "（请先填 Key）"));
+  } finally { if (btn) btn.disabled = false; }
+}
+
 /* ----- System prompts section ----- */
 function refreshPromptsSection() { renderPromptsList(); }
 function renderPromptsList() {
@@ -2828,16 +2988,6 @@ document.getElementById("add-prompt-btn").onclick = () => {
   const last = names[names.length - 1]; if (last) { last.focus(); last.select(); }
 };
 
-document.getElementById("fetch-or").onclick = (e) => { e.preventDefault(); fetchOpenRouterModels(); };
-document.getElementById("or-search").addEventListener("input", (e) => renderORList(orCatalog, e.target.value));
-document.getElementById("add-model-btn").onclick = () => {
-  const p = document.getElementById("add-provider").value;
-  const m = document.getElementById("add-model").value.trim();
-  if (!m) return;
-  addModel({ provider: p, model: m });
-  document.getElementById("add-model").value = "";
-  renderEnabled(); renderORList(orCatalog, document.getElementById("or-search").value);
-};
 
 document.getElementById("attach-btn").onclick = () => document.getElementById("file-input").click();
 document.getElementById("web-btn").onclick = toggleWeb;
@@ -3078,7 +3228,7 @@ function applySeed(seed) {
   pushQuickConfig();   // hand the quick-ask bar its initial config as soon as we're up
   try { if (window.chatbox && window.chatbox.getUpdateStatus) renderUpdatePill(await window.chatbox.getUpdateStatus()); } catch (e) {}
   if (_pendingQuick) { const q = _pendingQuick; _pendingQuick = null; handleQuickOpen(q); }
-  if (!anyKey()) setTimeout(() => openSettings("providers"), 300);
+  if (!anyKey()) setTimeout(() => openSettings("services"), 300);
 })();
 // Best-effort flush of any pending debounced save before the window goes away.
 window.addEventListener("pagehide", () => { if (_saveDirty) flushSave(); });

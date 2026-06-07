@@ -127,8 +127,7 @@
         <div class="modal-title">设置</div>
         <button class="nav-item" data-sec="appearance">外观</button>
         <button class="nav-item" data-sec="prompts">系统提示词</button>
-        <button class="nav-item active" data-sec="providers">模型提供方</button>
-        <button class="nav-item" data-sec="models">管理模型</button>
+        <button class="nav-item active" data-sec="services">模型服务</button>
         <button class="nav-item" data-sec="defaults">默认模型</button>
         <button class="nav-item" data-sec="quick">快速提问</button>
         <button class="nav-item" data-sec="shortcuts">快捷键</button>
@@ -137,64 +136,13 @@
       </nav>
       <div id="modal-body">
         <div id="modal-sections">
-          <!-- Providers -->
-          <section data-sec="providers">
-            <h3>模型提供方</h3>
-            <p class="sec-desc">填入你拥有的服务商 API Key（仅保存在本机，不会上传）。可同时配置多个，随时在右上角切换模型。改动实时保存。</p>
-            <div class="settings-group">
-              <div class="field key-field">
-                <label><span class="key-label-main">OpenRouter</span> <a href="https://openrouter.ai/keys" target="_blank">获取 Key ↗</a></label>
-                <input type="password" id="key-openrouter" placeholder="sk-or-v1-..." autocomplete="off" spellcheck="false">
-              </div>
-              <div class="field key-field">
-                <label><span class="key-label-main">OpenAI</span> <a href="https://platform.openai.com/api-keys" target="_blank">获取 Key ↗</a></label>
-                <input type="password" id="key-openai" placeholder="sk-..." autocomplete="off" spellcheck="false">
-              </div>
-              <div class="field key-field">
-                <label><span class="key-label-main">Anthropic (Claude)</span> <a href="https://console.anthropic.com/settings/keys" target="_blank">获取 Key ↗</a></label>
-                <input type="password" id="key-anthropic" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
-              </div>
-              <div class="field key-field">
-                <label><span class="key-label-main">DeepSeek</span> <a href="https://platform.deepseek.com/api_keys" target="_blank">获取 Key ↗</a></label>
-                <input type="password" id="key-deepseek" placeholder="sk-..." autocomplete="off" spellcheck="false">
-              </div>
-              <div class="field key-field">
-                <label><span class="key-label-main">Google Gemini</span> <a href="https://aistudio.google.com/app/apikey" target="_blank">获取 Key ↗</a></label>
-                <input type="password" id="key-google" placeholder="AIza..." autocomplete="off" spellcheck="false">
-              </div>
-            </div>
-          </section>
-
-          <!-- Manage models -->
-          <section data-sec="models" class="hidden">
-            <h3>管理模型</h3>
-            <p class="sec-desc">挑选你要使用的模型。这里启用的模型会出现在右上角的切换列表，以及「默认模型」下拉中。改动即时生效。</p>
-            <div class="settings-group">
-              <div class="field">
-                <label>已启用</label>
-                <div id="enabled-models" class="enabled-list"></div>
-              </div>
-            </div>
-            <div class="group-label">推荐模型（点击添加 / 移除）</div>
-            <div class="settings-group">
-              <div class="field">
-                <div id="suggested-models"></div>
-              </div>
-            </div>
-            <div class="settings-group">
-              <div class="field">
-                <label>手动添加（任意提供方）</label>
-                <div class="model-row">
-                  <select id="add-provider"></select>
-                  <input id="add-model" placeholder="模型 ID，如 gpt-4o / claude-3-5-sonnet-latest">
-                  <button class="btn small" id="add-model-btn">添加</button>
-                </div>
-              </div>
-              <div class="field">
-                <label>从 OpenRouter 获取 <a href="#" id="fetch-or">刷新列表 ↻</a></label>
-                <input id="or-search" placeholder="搜索模型名，例如 claude、gpt、deepseek…">
-                <div id="or-list" class="or-list"></div>
-              </div>
+          <!-- Model services: pick a provider on the left → its key + its models on the right -->
+          <section data-sec="services">
+            <h3>模型服务</h3>
+            <p class="sec-desc">左侧选服务商，右侧填它的 API Key 并管理它的模型。Key 仅存本机、不上传，改动实时保存。</p>
+            <div class="ms-layout">
+              <div id="ms-providers" class="ms-providers"></div>
+              <div id="ms-detail" class="ms-detail"></div>
             </div>
           </section>
 

@@ -669,7 +669,37 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .settings-group { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
 .settings-group .field { margin: 0; padding: 13px 14px; border-bottom: 1px solid var(--border); }
 .settings-group .field:last-child { border-bottom: none; }
-.group-label { font-size: 11.5px; font-weight: 600; color: var(--text-dim); letter-spacing: .02em; margin: 0 2px 7px; }
+.group-label { font-size: 11.5px; font-weight: 600; color: var(--text-dim); letter-spacing: .02em; margin: 14px 2px 7px; }
+
+/* ---- model services: provider list + per-provider detail ---- */
+.ms-layout { display: flex; gap: 18px; align-items: flex-start; }
+.ms-providers { width: 188px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; }
+.ms-prov { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: none; background: transparent; border-radius: 9px; cursor: pointer; color: var(--text-dim); text-align: left; font-size: 13.5px; font-family: inherit; }
+.ms-prov:hover { background: var(--bg-elev); color: var(--text); }
+.ms-prov.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.ms-prov-ic { display: inline-flex; flex-shrink: 0; opacity: .9; }
+.ms-prov-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ms-prov-n { font-size: 11px; color: var(--text-dim); background: var(--bg-elev); border-radius: 20px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
+.ms-prov-dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; border: 1px solid var(--border); flex-shrink: 0; }
+.ms-prov-dot.on { background: var(--text); border-color: var(--text); }
+.ms-detail { flex: 1; min-width: 0; }
+.ms-head { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
+.ms-head-ic { display: inline-flex; opacity: .9; }
+.ms-head h4 { margin: 0; font-size: 15px; }
+.ms-field { margin-bottom: 20px; }
+.ms-field > label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; }
+.ms-field > label a { color: var(--accent); font-weight: 500; }
+.ms-enabled { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.ms-mchip { display: inline-flex; align-items: center; gap: 1px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 2px 3px 2px 5px; max-width: 100%; }
+.ms-mchip-name { background: transparent; border: none; color: var(--text); font-size: 12.5px; font-family: inherit; outline: none; width: 160px; max-width: 38vw; padding: 4px 2px; }
+.ms-mchip .rm { background: none; border: none; color: var(--text-dim); cursor: pointer; display: inline-flex; padding: 3px; border-radius: 6px; flex-shrink: 0; }
+.ms-mchip .rm:hover { color: var(--danger); background: var(--bg-soft); }
+.ms-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.ms-add-row { flex: 1; min-width: 200px; }
+.ms-add-row input, .ms-search { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; font-family: inherit; outline: none; padding: 8px 11px; }
+.ms-add-row input { flex: 1; min-width: 0; }
+.ms-search { display: block; width: 100%; margin-bottom: 8px; }
+.ms-add-row input:focus, .ms-search:focus { border-color: var(--accent); }
 
 /* ---- API key field UX: status dot, eye toggle, test button ---- */
 .key-field label { gap: 8px; }
