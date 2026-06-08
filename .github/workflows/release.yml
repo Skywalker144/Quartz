@@ -50,3 +50,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # ad-hoc sign (no Apple/Win cert)
         run: npx electron-builder ${{ matrix.args }} --publish always
+
+      # Fill the GitHub Release body with this version's CHANGELOG.md section (the release itself is
+      # created by electron-builder above). Runs once (mac job, which publishes first) and never fails
+      # the release — worst case the notes stay empty, same as before.
+      - name: Sync release notes from CHANGELOG.md
+        if: matrix.os == 'macos-14'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NOTES=$(awk -v v="$VERSION" '$0 ~ ("^## " v "( |$)") {f=1; next} /^## / && f {exit} f' CHANGELOG.md)
+          if [ -n "$NOTES" ]; then
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+            gh release edit "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+            echo "Release notes synced for v$VERSION."
+          else
+            echo "No CHANGELOG.md section for $VERSION — leaving notes unchanged."
+          fi

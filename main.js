@@ -5,9 +5,17 @@ const os = require("os");
 let autoUpdater = null;
 try { autoUpdater = require("electron-updater").autoUpdater; } catch (e) { /* dep missing in some dev setups */ }
 
-// Keep the storage folder stable across the ChatBox→Quartz rename so existing conversations
-// survive (userData defaults to productName, which changed). Must run before app is ready.
-try { app.setPath("userData", path.join(app.getPath("appData"), "ChatBox")); } catch (e) {}
+// Storage folder = "Quartz". Early builds used "ChatBox" (the old product name); migrate that folder over once
+// via an atomic same-volume rename. On any failure, fall back to the legacy folder so data is never lost.
+// Must run before app is ready.
+try {
+  const _ad = app.getPath("appData");
+  const _target = path.join(_ad, "Quartz");
+  const _legacy = path.join(_ad, "ChatBox");
+  try { if (!fs.existsSync(_target) && fs.existsSync(_legacy)) fs.renameSync(_legacy, _target); } catch (e) {}
+  // Use Quartz, unless the rename couldn't happen and only the legacy folder exists (then keep using it).
+  app.setPath("userData", (fs.existsSync(_legacy) && !fs.existsSync(_target)) ? _legacy : _target);
+} catch (e) {}
 
 // Chromium encrypts its own cookie/session storage with an OS-keychain key ("Quartz Safe Storage").
 // On an ad-hoc-signed app whose code signature changes every update, that pops a keychain prompt on

@@ -17,7 +17,6 @@ const PROVIDERS = {
 /* ---------- DOM ---------- */
 const wrap = document.getElementById("wrap");
 const inputEl = document.getElementById("q");
-const modelEl = document.getElementById("qmodel");
 const ansEl = document.getElementById("qans");
 const ansScroll = document.getElementById("qans-scroll");
 const ansContent = document.getElementById("qans-content");
@@ -43,10 +42,6 @@ function applyConfig(c) {
   if (!cfg) cfg = { providers: {}, chat: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" }, theme: "auto", system: "", temp: undefined };
   if (!cfg.chat) cfg.chat = { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" };
   applyTheme(cfg.theme || "auto");
-  // show the user's custom model name if they set one, else the bare model id tail
-  const label = (cfg.chat.name && cfg.chat.name.trim()) ? cfg.chat.name.trim() : ((cfg.chat.model || "").split("/").pop() || cfg.chat.model || "");
-  modelEl.textContent = label;
-  modelEl.title = cfg.chat.model || "";
 }
 
 function keyFor(provider) { const p = cfg && cfg.providers && cfg.providers[provider]; return (p && p.key) ? p.key.trim() : ""; }
@@ -93,10 +88,25 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if
   };
   try { marked.use({ extensions: [blockMath, inlineMath] }); } catch (e) {}
 })();
+// CommonMark emphasis won't fire when a ** / * delimiter sits flush against CJK punctuation with a CJK
+// letter on the other side (Chinese uses no spaces), so "**加粗（注）**的" renders literally. Slip a
+// zero-width space between the delimiter and the punctuation to restore "flanking"; it is stripped back
+// out of the final HTML so copied text stays clean. Code spans/blocks are left untouched.
+const CJK_LETTER = "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\uF900-\\uFAFF\\u3005\\u3007";
+const CJK_PUNCT = "()\\[\\]{}<>\"'`!?.,:;~|@#%^&=+/\\\\\\u2018\\u2019\\u201C\\u201D\\u2013\\u2014\\u2026\\u3000-\\u303F\\uFF00-\\uFFEF";
+const EM_OPEN_RE = new RegExp("([" + CJK_LETTER + "])([*_]+)([" + CJK_PUNCT + "])", "g");
+const EM_CLOSE_RE = new RegExp("([" + CJK_PUNCT + "])([*_]+)([" + CJK_LETTER + "])", "g");
+function fixCjkEmphasis(src) {
+  if (!src || (src.indexOf("*") < 0 && src.indexOf("_") < 0)) return src;
+  return src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
+    .map((seg, i) => (i % 2) ? seg : seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3"))
+    .join("");
+}
 function renderMd(t) {
   let html;
-  if (window.marked) { try { html = marked.parse(t, { breaks: true, gfm: true }); } catch (e) {} }
+  if (window.marked) { try { html = marked.parse(fixCjkEmphasis(t), { breaks: true, gfm: true }); } catch (e) {} }
   if (html == null) { const d = document.createElement("div"); d.textContent = t; html = "<p>" + d.innerHTML.replace(/\n/g, "<br>") + "</p>"; }
+  html = html.replace(/​/g, "");   // drop the helper zero-width spaces
   if (window.DOMPurify) return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["target"], FORBID_TAGS: ["style", "form"] });
   return html;
 }

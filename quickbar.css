@@ -53,11 +53,6 @@ body { font-family: var(--font-family); -webkit-user-select: none; user-select: 
   -webkit-user-select: text; user-select: text;
 }
 #q::placeholder { color: var(--text-dim); }
-#qmodel {
-  flex-shrink: 0; font-size: 11px; color: var(--text-dim);
-  background: var(--accent-soft); padding: 3px 8px; border-radius: 7px;
-  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* ---- answer area: no hard divider — soft opacity fades at the scroll edges ---- */
 #qans { padding: 2px 18px 14px; }
@@ -78,8 +73,8 @@ body { font-family: var(--font-family); -webkit-user-select: none; user-select: 
 #qans-scroll.fade-top::before { opacity: 1; }
 #qans-scroll.fade-bottom::after { opacity: 1; }
 /* streaming loader — the Quartz crystal with a highlight rotating around its facets */
-.qz-load { display: inline-flex; vertical-align: -5px; margin-left: 2px; }
-.qz-crystal { width: 19px; height: 19px; }
+.qz-load { display: inline-flex; vertical-align: -6px; margin-left: 2px; }
+.qz-crystal { width: 24px; height: 24px; }
 .qz-crystal .qc, .qz-crystal .qc-center { fill: var(--text); }
 .qz-crystal .qc-center { opacity: .26; }
 .qz-crystal .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }

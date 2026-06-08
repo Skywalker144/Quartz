@@ -435,8 +435,8 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .reasoning-head:hover { color: var(--text); }
 .reasoning-body { font-size: 13px; color: var(--text-dim); padding: 2px 12px 10px; max-height: 110px; overflow-y: auto; line-height: 1.6; }
 /* streaming loader — the Quartz crystal with a highlight rotating around its facets (matches the icon) */
-.qz-load { display: inline-flex; vertical-align: -5px; margin-left: 3px; }
-.qz-crystal { width: 20px; height: 20px; }
+.qz-load { display: inline-flex; vertical-align: -6px; margin-left: 3px; }
+.qz-crystal { width: 24px; height: 24px; }
 .qz-crystal .qc, .qz-crystal .qc-center { fill: var(--text); }
 .qz-crystal .qc-center { opacity: .26; }
 .qz-crystal .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }
@@ -497,6 +497,19 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 #composer-hint { font-size: 11.5px; color: var(--text-dim); padding: 5px 2px 1px; display: none; }
 #composer-inner.show-hint #composer-hint { display: block; }
 #composer-hint kbd { font-size: 10.5px; padding: 0 5px; border-bottom-width: 2px; }
+
+/* Floating "back to bottom" — shown only when auto-follow is released and the newest content is off-screen. */
+#scroll-btn {
+  position: absolute; right: 24px; bottom: calc(var(--composer-h, 112px) + 18px); z-index: 6;
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); background: var(--bg-elev);
+  border: 1px solid var(--border); box-shadow: var(--shadow-pop);
+  cursor: pointer; opacity: 0; transform: translateY(6px) scale(.94);
+  pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+}
+#scroll-btn.show { opacity: 1; transform: none; pointer-events: auto; }
+#scroll-btn:hover { color: var(--text); background: var(--accent-soft); }
 
 /* ---------- Composer (floats over the chat; text scrolling under it blurs & fades) ---------- */
 #composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; pointer-events: none; padding: 56px 18px 16px calc(18px + var(--nodemap-w)); }

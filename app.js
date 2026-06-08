@@ -167,15 +167,11 @@ function freshState() {
     settings: {
       providers: { openrouter: { key: "" }, openai: { key: "" }, anthropic: { key: "" }, deepseek: { key: "" }, google: { key: "" } },
       appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid" },
-      models: [
-        { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-        { provider: "openrouter", model: "openai/gpt-5.5" },
-        { provider: "openrouter", model: "google/gemini-3-flash-preview" },
-      ],
+      models: [],   // empty on a fresh install — the user adds their own; the first one added becomes the default
       prompts: [{ id: "daily-default", name: "日常", text: DAILY_PROMPT }, { id: "expert-default", name: "深度", text: EXPERT_PROMPT }],
       defaults: {
-        chat: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
-        title: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
+        chat: null,    // set automatically when the first model is added (see addModel)
+        title: null,
         promptId: "daily-default", temp: 1, maxTokens: null, topP: null, topK: null,
       },
       sidebar: { width: 264, collapsed: false },
@@ -509,7 +505,7 @@ function pushQuickConfig() {
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function currentConv() { return state.conversations.find(c => c.id === state.currentId) || null; }
-function keyOf(ref) { const p = state.settings.providers[ref.provider]; return (p && p.key ? p.key.trim() : ""); }
+function keyOf(ref) { if (!ref || !ref.provider) return ""; const p = state.settings.providers[ref.provider]; return (p && p.key ? p.key.trim() : ""); }
 function activeRef() { const c = currentConv(); return (c && c.model) || nextModel; }
 function anyKey() { return PROVIDER_ORDER.some(pk => keyOf({ provider: pk })); }
 
@@ -518,7 +514,15 @@ function refKey(r) { return r.provider + "::" + r.model; }
 function parseRefKey(s) { const i = s.indexOf("::"); return { provider: s.slice(0, i), model: s.slice(i + 2) }; }
 function modelsEqual(a, b) { return !!a && !!b && a.provider === b.provider && a.model === b.model; }
 function hasModel(r) { return state.settings.models.some(m => modelsEqual(m, r)); }
-function addModel(r) { if (!hasModel(r)) { state.settings.models.push({ provider: r.provider, model: r.model }); save(); } }
+function addModel(r) {
+  if (hasModel(r)) return;
+  state.settings.models.push({ provider: r.provider, model: r.model });
+  // First model on an empty install becomes the default chat + naming model (so the app works right away).
+  const d = state.settings.defaults;
+  if (!d.chat) { d.chat = { provider: r.provider, model: r.model }; nextModel = clone(d.chat); }
+  if (!d.title) d.title = { provider: r.provider, model: r.model };
+  save();
+}
 function removeModel(r) { state.settings.models = state.settings.models.filter(m => !modelsEqual(m, r)); save(); }
 const MODEL_BRANDS = { gpt: "GPT", claude: "Claude", gemini: "Gemini", deepseek: "DeepSeek", llama: "Llama", mistral: "Mistral", mixtral: "Mixtral", qwen: "Qwen", grok: "Grok", phi: "Phi", gemma: "Gemma", command: "Command", sonar: "Sonar", kimi: "Kimi", glm: "GLM", nova: "Nova", yi: "Yi" };
 function prettyToken(t) {
@@ -532,15 +536,20 @@ function prettyToken(t) {
 //  · OpenRouter / OpenAI / DeepSeek / Google: drop the "org/" prefix and any ":tag", split on "-"/"_",
 //    then brand-case or capitalize each word (deepseek-v4-flash → DeepSeek V4 Flash, gpt-5.5 → GPT 5.5).
 //  · Anthropic native ids encode the version with dashes (claude-opus-4-8) — fold "<digit>-<digit>" into "4.8" first.
+//  · Google models (OpenRouter org "google/" or the native Google provider) often carry a trailing "-preview"
+//    (sometimes plus a date) — drop it so gemini-3-flash-preview reads as "Gemini 3 Flash".
 function prettyModel(id, provider) {
   let s = String(id || "");
-  const slash = s.lastIndexOf("/"); if (slash >= 0) s = s.slice(slash + 1);    // strip "anthropic/" etc.
+  const slash = s.lastIndexOf("/");
+  const vendor = slash >= 0 ? s.slice(0, slash).toLowerCase() : "";              // OpenRouter org, e.g. "google"
+  if (slash >= 0) s = s.slice(slash + 1);                                        // strip "anthropic/" etc.
   s = s.replace(/:.*$/, "");                                                     // strip ":free" / ":beta"
   if (!s) return String(id || "");
+  if (vendor === "google" || provider === "google") s = s.replace(/-preview\b.*$/i, "");  // gemini-3-flash-preview → Gemini 3 Flash
   if (provider === "anthropic") s = s.replace(/(\d)-(\d)/g, "$1.$2");            // claude-opus-4-8 → claude-opus-4.8
   return s.split(/[-_]/).map(prettyToken).filter(Boolean).join(" ");
 }
-function modelLabel(ref) { return prettyModel(ref.model, ref.provider); }   // names are auto-generated; no manual override
+function modelLabel(ref) { return ref ? prettyModel(ref.model, ref.provider) : ""; }   // names are auto-generated; no manual override
 // First time a provider gets an API key: wire up sensible models/defaults so it works out of the box.
 function onProviderConnected(pk) {
   if (pk === "deepseek") {
@@ -567,7 +576,7 @@ function activeReasoning() { const c = currentConv(); return c ? !!c.reasoning :
 function activeEffort() { const c = currentConv(); return (c ? c.reasoningEffort : nextReasoningEffort) || "medium"; }
 function toggleWeb() { const c = currentConv(); if (c) c.webSearch = !c.webSearch; else nextWeb = !nextWeb; save(); updateComposerToggles(); }
 function setEffort(level) { const c = currentConv(); if (c) { c.reasoningEffort = level; c.reasoning = true; } else { nextReasoningEffort = level; nextReasoning = true; } save(); updateComposerToggles(); warnIfNoReasoning(); }
-function warnIfNoReasoning() { if (reasoningSupport(activeRef()) === "no") toast("ℹ️ 该模型不支持推理，思考开关对它无效（请求中会被忽略）"); }
+function warnIfNoReasoning() { const r = activeRef(); if (r && reasoningSupport(r) === "no") toast("ℹ️ 该模型不支持推理，思考开关对它无效（请求中会被忽略）"); }
 function updateComposerToggles() {
   const w = document.getElementById("web-btn"); if (w) w.classList.toggle("active", activeWeb());
   const t = document.getElementById("think-btn");
@@ -653,14 +662,29 @@ function appendStreamLoader(el) {
 }
 function removeStreamLoader(el) { const l = el && el.querySelector(".qz-load"); if (l) l.remove(); }
 
+// CommonMark emphasis won't fire when a ** / * delimiter sits flush against CJK punctuation with a CJK
+// letter on the other side (Chinese uses no spaces), so "**加粗（注）**的" renders literally. Slip a
+// zero-width space between the delimiter and the punctuation to restore "flanking"; it is stripped back
+// out of the final HTML so copied text stays clean. Code spans/blocks are left untouched.
+const CJK_LETTER = "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\uF900-\\uFAFF\\u3005\\u3007";
+const CJK_PUNCT = "()\\[\\]{}<>\"'`!?.,:;~|@#%^&=+/\\\\\\u2018\\u2019\\u201C\\u201D\\u2013\\u2014\\u2026\\u3000-\\u303F\\uFF00-\\uFFEF";
+const EM_OPEN_RE = new RegExp("([" + CJK_LETTER + "])([*_]+)([" + CJK_PUNCT + "])", "g");
+const EM_CLOSE_RE = new RegExp("([" + CJK_PUNCT + "])([*_]+)([" + CJK_LETTER + "])", "g");
+function fixCjkEmphasis(src) {
+  if (!src || (src.indexOf("*") < 0 && src.indexOf("_") < 0)) return src;
+  return src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
+    .map((seg, i) => (i % 2) ? seg : seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3"))
+    .join("");
+}
+
 function renderMarkdown(text) {
   let html;
-  if (window.marked) { try { html = marked.parse(text, { breaks: true, gfm: true }); } catch (e) {} }
+  if (window.marked) { try { html = marked.parse(fixCjkEmphasis(text), { breaks: true, gfm: true }); } catch (e) {} }
   if (html == null) {
     const div = document.createElement("div"); div.textContent = text;
     html = "<p>" + div.innerHTML.replace(/\n/g, "<br>") + "</p>";
   }
-  return sanitizeHtml(html);
+  return sanitizeHtml(html.replace(/​/g, ""));   // drop the helper zero-width spaces
 }
 // Strip any executable/exfiltration vectors from rendered HTML (defence-in-depth with the CSP).
 // Keeps KaTeX (HTML + MathML + SVG), code, tables, links, images.
@@ -777,7 +801,15 @@ function applySidebar() {
 }
 function toggleSidebar() { state.settings.sidebar.collapsed = !state.settings.sidebar.collapsed; save(); applySidebar(); }
 function isNearBottom(box) { return box.scrollHeight - box.scrollTop - box.clientHeight < 80; }
-function updateScrollBtn() { /* scroll-to-bottom button removed; kept as a no-op for existing callers */ }
+function updateScrollBtn() {
+  const btn = document.getElementById("scroll-btn");
+  const box = document.getElementById("messages");
+  if (!btn || !box) return;
+  const conv = currentConv();
+  const has = !!(conv && conv.messages && conv.messages.length);
+  // Show only when auto-follow is released (no streaming pin) and the latest content sits below the fold.
+  btn.classList.toggle("show", has && pinTop == null && !isNearBottom(box));
+}
 
 /* ===================== File handling ===================== */
 function readAs(file, how) {
@@ -1447,6 +1479,10 @@ function compactionMarker(conv) {
   return wrap;
 }
 
+// Friendly display names for code-fence language tags; unknown tags are shown verbatim.
+const LANG_LABELS = { js: "JavaScript", jsx: "JSX", mjs: "JavaScript", ts: "TypeScript", tsx: "TSX", py: "Python", python: "Python", rb: "Ruby", ruby: "Ruby", go: "Go", golang: "Go", rs: "Rust", rust: "Rust", java: "Java", kt: "Kotlin", kotlin: "Kotlin", swift: "Swift", c: "C", cpp: "C++", "c++": "C++", cc: "C++", cs: "C#", "c#": "C#", csharp: "C#", php: "PHP", sh: "Shell", bash: "Bash", zsh: "Zsh", shell: "Shell", console: "Shell", ps1: "PowerShell", powershell: "PowerShell", sql: "SQL", json: "JSON", jsonc: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", xml: "XML", html: "HTML", htm: "HTML", css: "CSS", scss: "SCSS", sass: "Sass", less: "Less", md: "Markdown", markdown: "Markdown", tex: "TeX", latex: "LaTeX", dockerfile: "Dockerfile", docker: "Dockerfile", makefile: "Makefile", make: "Makefile", cmake: "CMake", r: "R", lua: "Lua", dart: "Dart", scala: "Scala", clj: "Clojure", ex: "Elixir", exs: "Elixir", erl: "Erlang", hs: "Haskell", pl: "Perl", perl: "Perl", objc: "Objective-C", vue: "Vue", svelte: "Svelte", graphql: "GraphQL", gql: "GraphQL", proto: "Protobuf", ini: "INI", diff: "Diff", patch: "Diff", vim: "Vim", text: "Text", txt: "Text", plaintext: "Text", plain: "Text" };
+function langLabel(lang) { if (!lang) return "code"; return LANG_LABELS[lang.toLowerCase()] || lang; }
+
 function enhanceCode(scope) {
   if (window.hljs) scope.querySelectorAll("pre > code").forEach(code => {
     if (!code.dataset.highlighted) { try { hljs.highlightElement(code); } catch (e) {} }
@@ -1458,7 +1494,7 @@ function enhanceCode(scope) {
     if (code) { const m = (code.className || "").match(/\blanguage-([\w+#.-]+)/i); if (m) lang = m[1]; }
     const block = document.createElement("div"); block.className = "code-block";
     const head = document.createElement("div"); head.className = "code-head";
-    const lab = document.createElement("span"); lab.className = "code-lang"; lab.textContent = lang || "code";
+    const lab = document.createElement("span"); lab.className = "code-lang"; lab.textContent = langLabel(lang);
     const btn = document.createElement("button"); btn.type = "button"; btn.className = "code-copy";
     const reset = () => { btn.classList.remove("done"); btn.innerHTML = ic("copy", 13) + "<span>复制</span>"; };
     reset();
@@ -1571,9 +1607,18 @@ async function processNodeTitleQueue() {
       const tref = state.settings.defaults.title;
       if (!keyOf(tref)) break;
       nodeTitleTried.add(job.convId + ":" + job.userIndex);
-      const sys = "你是侧栏导航小标题生成器。根据给到的用户消息，提炼其主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+      // Feed the conversation's earlier node titles as context so a follow-up ("继续" / "再展开第二点")
+      // gets a meaningful, non-duplicate label instead of a vague one. A standalone first question has none.
+      const priorTitles = conv.messages.slice(0, job.userIndex)
+        .filter(x => x.role === "user" && x.nodeTitle).map(x => x.nodeTitle).slice(-8);
+      let sys = "你是侧栏导航小标题生成器。根据给到的用户消息，提炼其主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+      let userContent = plainText(m).slice(0, 500);
+      if (priorTitles.length) {
+        sys = "你是侧栏导航小标题生成器。会给你同一对话里【已有的节点标题】和一条【新消息】。为新消息提炼主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。若新消息是对前文的延续或追问，请结合语境给出有意义、且能与已有标题区分的标题，不要与已有标题重复。这是起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+        userContent = "【已有节点标题】\n" + priorTitles.map(t => "· " + t).join("\n") + "\n\n【新消息】\n" + plainText(m).slice(0, 500);
+      }
       try {
-        const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: plainText(m).slice(0, 500) }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
+        const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: userContent }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
         let t = ((r.text || "").trim().split("\n").filter(s => s.trim()).pop() || "").replace(/^["'“”『「]+|["'“”』」.。!！?？]+$/g, "").slice(0, 30);
         if (t) { m.nodeTitle = t; save(); const cur = currentConv(); if (cur && cur.id === job.convId) renderNodemap(); }
       } catch (e) { /* leave as snippet; retry next session */ }
@@ -1694,7 +1739,7 @@ function messageMenuItems(index, msg) {
   const cur = activeRef();
   const models = modelRefList().map(ref => ({
     label: modelLabel(ref),
-    icon: (ref.provider === cur.provider && ref.model === cur.model) ? "check" : undefined,
+    icon: (cur && ref.provider === cur.provider && ref.model === cur.model) ? "check" : undefined,
     disabled: !keyOf(ref),
     onClick: () => regenerateWith(index, ref),
   }));
@@ -1923,6 +1968,7 @@ async function sendMessage() {
   const atts = pending.slice();
   if (!text && !atts.length) return;
   const ref = activeRef();
+  if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
 
   let conv = currentConv();
@@ -1938,6 +1984,7 @@ async function sendMessage() {
 
 async function runCompletion(conv, opts) {
   const ref = activeRef();
+  if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
   conv.model = clone(ref);
   conv.messages.push({ role: "assistant", content: "" });
@@ -2044,6 +2091,7 @@ async function runCompletion(conv, opts) {
   renderMessages(); renderSidebar();
   box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
   lastSetTop = box.scrollTop;
+  updateScrollBtn();
 }
 
 // Update only the header title (+ hover tooltip) for the current conversation, WITHOUT rebuilding
@@ -2063,22 +2111,43 @@ function evalTitleFade() {
   h1.classList.toggle("faded", !h1.isContentEditable && h1.scrollWidth > h1.clientWidth + 1);
 }
 
+// Clean a title model's raw output → last non-empty line, stripped of wrapping quotes / trailing punctuation.
+function cleanTitle(s) {
+  return ((s || "").trim().split("\n").filter(x => x.trim()).pop() || "")
+    .replace(/^["'“”『「]+|["'“”』」.。!！?？]+$/g, "").slice(0, 40);
+}
 async function maybeTitle(conv) {
-  if (conv.titled) return;
-  const u = conv.messages.find(m => m.role === "user" && ((m.content || "").trim() || (m.attachments || []).length));
-  if (!u) return;
   const tref = state.settings.defaults.title;
-  if (!keyOf(tref)) return; // no key for naming model — keep snippet title
-  // Title from the user's first message alone — cheaper (no answer tokens) and available immediately.
-  const sys = "你是对话标题生成器。根据给到的用户消息，提炼其主题，输出一个简短标题：不超过 6 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。例如消息为「用比喻解释相对论」时应输出「相对论 通俗解释」，而不是某个比喻。只输出标题本身。";
-  conv.titled = true; save();
+  if (!tref || !keyOf(tref)) return; // no naming model configured — keep the snippet title
+  const prompts = conv.messages.filter(m => m.role === "user" && ((m.content || "").trim() || (m.attachments || []).length));
+  if (!prompts.length) return;
+
+  if (!conv.titled) {
+    // First title — from the user's first message alone (immediate, no answer tokens).
+    const sys = "你是对话标题生成器。根据给到的用户消息，提炼其主题，输出一个简短标题：不超过 6 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。例如消息为「用比喻解释相对论」时应输出「相对论 通俗解释」，而不是某个比喻。只输出标题本身。";
+    conv.titled = true; save();
+    try {
+      const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: plainText(prompts[0]).slice(0, 800) }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
+      const t = cleanTitle(r.text);
+      if (t) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
+      else toast("自动标题失败：模型只输出了思考、没给出标题。建议把「话题命名模型」设为不推理的 deepseek-chat。");
+    } catch (e) { toast("自动标题失败：" + e.message + "（点标题旁的 ↻ 可重试）"); }
+    return;
+  }
+
+  // Already titled — each new turn, let the model decide whether the title still fits the whole thread.
+  // Judged from the user's questions only (never the answers). A manually edited title is left alone.
+  if (conv.titleManual || prompts.length < 2) return;
+  const list = prompts.map((m, i) => (i + 1) + ". " + plainText(m).replace(/\s+/g, " ").slice(0, 140)).join("\n").slice(0, 1600);
+  const sys = "你是对话标题维护器。会给你一个对话的【当前标题】和用户【依次提出的问题】。判断当前标题是否仍能概括整个对话：若仍然贴切，只输出 KEEP（四个大写字母，不要任何别的内容）；若对话已展开或转向、当前标题已概括不了，则输出一个更贴切的新标题——不超过 6 个词、名词短语、用对话所用的语言、只输出标题本身，禁止解释、标点、引号。";
+  const usr = "【当前标题】" + conv.title + "\n\n【用户依次提出的问题】\n" + list;
   try {
-    const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: plainText(u).slice(0, 800) }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
-    let t = (r.text || "").trim().split("\n").filter(s => s.trim()).pop() || "";
-    t = t.replace(/^["'“”『「]+|["'“”』」.。!！?？]+$/g, "").slice(0, 40);
-    if (t) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
-    else toast("自动标题失败：模型只输出了思考、没给出标题。建议把「话题命名模型」设为不推理的 deepseek-chat。");
-  } catch (e) { toast("自动标题失败：" + e.message + "（点标题旁的 ↻ 可重试）"); }
+    const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: usr }] }, { temp: 0.2, maxTokens: 256, reasoning: false });
+    const lastLine = (r.text || "").trim().split("\n").filter(x => x.trim()).pop() || "";
+    if (/^\s*keep\b/i.test(lastLine)) return;       // model is satisfied with the current title
+    const t = cleanTitle(r.text);
+    if (t && t !== conv.title && !/keep/i.test(t)) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
+  } catch (e) { /* silent — background refinement, no toast */ }
 }
 
 async function compactContext() {
@@ -2086,6 +2155,7 @@ async function compactContext() {
   if (!conv || !conv.messages.length) { toast("当前没有可压缩的对话"); return; }
   if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
   const ref = conv.model || nextModel;
+  if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
 
   const start = conv.compaction ? Math.min(conv.compaction.count, conv.messages.length) : 0;
@@ -2115,6 +2185,7 @@ async function compactContext() {
 async function regenerateTitle(conv) {
   if (!conv) return;
   const tref = state.settings.defaults.title;
+  if (!tref) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(tref)) { _msProvider = tref.provider; openSettings("services"); toast("请先配置「话题命名模型」的 API Key"); return; }
   const text = conv.messages
     .filter(m => (m.content || "").trim() || (m.attachments || []).length)
@@ -2150,7 +2221,7 @@ function startTitleRename() {
     h1.removeEventListener("keydown", onKey); h1.removeEventListener("blur", onBlur);
     const v = (h1.textContent || "").trim();
     h1.contentEditable = "false";
-    if (commit && v && v !== conv.title) { conv.title = v; conv.titled = true; save(); renderSidebar(); }
+    if (commit && v && v !== conv.title) { conv.title = v; conv.titled = true; conv.titleManual = true; save(); renderSidebar(); }
     refreshHeaderTitle(conv);   // restore the canonical text + re-evaluate the fade
   };
   const onKey = (e) => {
@@ -2224,7 +2295,7 @@ function openPopover() {
   closePromptPop();
   const cur = activeRef();
   const refs = modelRefList();
-  const i = refs.findIndex(r => r.provider === cur.provider && r.model === cur.model);
+  const i = cur ? refs.findIndex(r => r.provider === cur.provider && r.model === cur.model) : -1;
   modelPop.index = i < 0 ? 0 : i;
   modelPop.open = true;
   buildModelPopover();
@@ -2246,7 +2317,7 @@ function updateModelPill() {
   const ref = activeRef();
   const pill = document.getElementById("model-pill");
   pill.textContent = modelLabel(ref) || "未设置模型";
-  pill.dataset.tip = (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " · " + ref.model + "（点击切换）";
+  pill.dataset.tip = ref ? ((PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " · " + ref.model + "（点击切换）") : "前往设置添加模型";
 }
 
 /* ----- System-prompt switcher (header) ----- */
@@ -3029,7 +3100,7 @@ const MOD = IS_MAC ? "⌘" : "Ctrl";
 function setupHints() {
   // All hints live on one line — the input placeholder — so the composer stays compact (no separate hint row).
   const i = document.getElementById("input");
-  if (i) i.placeholder = "Enter 发送      Shift + Enter 换行      " + MOD + "L 回到输入框 · " + MOD + "N 新对话 · / 命令";
+  if (i) i.placeholder = "Enter 发送      Shift + Enter 换行      / 命令";
   const hint = document.getElementById("composer-hint");
   if (hint) hint.innerHTML = "";
 }
@@ -3215,10 +3286,18 @@ messagesBox.addEventListener("scroll", () => {
     autoScroll = isNearBottom(messagesBox);
   }
   scheduleNodeActive();
+  updateScrollBtn();
 });
 // a deliberate wheel / touch scroll releases the "pin user message to top" lock and stops the glide
 messagesBox.addEventListener("wheel", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
 messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
+// Tap the floating ↓ to jump to the bottom and resume following the stream.
+const _scrollBtn = document.getElementById("scroll-btn");
+if (_scrollBtn) _scrollBtn.addEventListener("click", () => {
+  pinTop = null; nodePinned = null; autoScroll = true;
+  animateScrollTo(messagesBox, messagesBox.scrollHeight, 190);   // quick, smooth glide — not an instant jump
+  updateScrollBtn();
+});
 
 // Sidebar resize
 let resizing = false;
