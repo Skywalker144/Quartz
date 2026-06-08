@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, globalShortcut, ipcMain, screen, dialog, safeStorage } = require("electron");
+const { app, BrowserWindow, Menu, shell, globalShortcut, ipcMain, screen, dialog, safeStorage, session, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -28,8 +28,8 @@ let quickEnabled = null;      // whether the quick-bar global shortcut is active
 let currentOpenShortcut = null;  // "open & focus Quartz" accelerator currently registered
 let openEnabled = null;          // whether that global shortcut is active
 // Platform-appropriate default global shortcuts. Windows avoids Alt+Space (system window menu) and the Cmd key.
-const DEF_QUICK = process.platform === "darwin" ? "Alt+Space" : "Ctrl+Shift+Space";
-const DEF_OPENMAIN = process.platform === "darwin" ? "Alt+Cmd+Space" : "Ctrl+Alt+Space";
+const DEF_QUICK = "Alt+Space";
+const DEF_OPENMAIN = process.platform === "darwin" ? "Cmd+Shift+L" : "Alt+Shift+L";
 
 const QUICK_W = 720;        // fixed width of the Spotlight-style bar
 const QUICK_MIN_H = 150;    // compact height: input row + shadow padding (28/60)
@@ -349,6 +349,35 @@ ipcMain.on("set-titlebar-overlay", (_e, o) => {
   if (process.platform === "darwin" || !mainWindow || mainWindow.isDestroyed() || !mainWindow.setTitleBarOverlay) return;
   try { mainWindow.setTitleBarOverlay(o); } catch (e) {}
 });
+// Route all app network (model APIs, updater) through a local proxy (e.g. Clash), or go direct.
+// defaultSession is shared by both the main window and the quick-ask bar, so one call covers everything.
+ipcMain.handle("set-proxy", async (_e, cfg) => {
+  try {
+    const ses = session.defaultSession;
+    if (cfg && cfg.enabled && cfg.host && cfg.port) {
+      const rules = (cfg.scheme === "socks5")
+        ? ("socks5://" + cfg.host + ":" + cfg.port)   // SOCKS5 for all schemes
+        : (cfg.host + ":" + cfg.port);                // bare host:port = HTTP proxy for all schemes (incl. https)
+      await ses.setProxy({ proxyRules: rules, proxyBypassRules: "<local>" });
+      return { ok: true, rules };
+    }
+    await ses.setProxy({ mode: "direct" });
+    return { ok: true, rules: null };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+// Probe connectivity through the proxied defaultSession (main-process net.request → no CORS, honours the proxy).
+// A Google 204 endpoint: only resolves if traffic really reaches the outside, exactly what a Clash user verifies.
+ipcMain.handle("test-proxy", () => new Promise((resolve) => {
+  const started = Date.now(); let done = false;
+  const finish = (r) => { if (!done) { done = true; resolve(r); } };
+  try {
+    const req = net.request({ method: "GET", url: "https://www.gstatic.com/generate_204" });
+    const timer = setTimeout(() => { try { req.abort(); } catch (e) {} finish({ ok: false, error: "超时（8 秒）" }); }, 8000);
+    req.on("response", (res) => { clearTimeout(timer); res.on("data", () => {}); res.on("end", () => {}); finish({ ok: true, status: res.statusCode, ms: Date.now() - started }); });
+    req.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: (e && e.message) || "无法连接" }); });
+    req.end();
+  } catch (e) { finish({ ok: false, error: e.message }); }
+}));
 
 /* ===================== Auto-update (GitHub releases) ===================== */
 // Windows (NSIS): electron-updater downloads + self-installs via quitAndInstall.

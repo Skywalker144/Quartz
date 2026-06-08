@@ -131,6 +131,8 @@ async function streamAsk(userText, signal, onDelta) {
   if (!key) { const e = new Error("NO_KEY"); e.code = "NO_KEY"; throw e; }
   const sys = cfg.system || "";
   const temp = (cfg.temp != null && cfg.temp !== "") ? Number(cfg.temp) : undefined;
+  const topP = (cfg.topP != null && cfg.topP !== "") ? Number(cfg.topP) : undefined;
+  const topK = (cfg.topK != null && cfg.topK !== "") ? Number(cfg.topK) : undefined;
   let acc = "", usage = null;
 
   if (prov.kind === "openai") {
@@ -139,6 +141,8 @@ async function streamAsk(userText, signal, onDelta) {
     msgs.push({ role: "user", content: userText });
     const body = { model: ref.model, messages: msgs, stream: true };
     if (temp != null) body.temperature = temp;
+    if (topP != null) body.top_p = topP;
+    if (topK != null && ref.provider === "openrouter") body.top_k = topK;
     const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
     if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; body.usage = { include: true }; }
     else if (ref.provider === "openai" || ref.provider === "deepseek") body.stream_options = { include_usage: true };
@@ -153,6 +157,8 @@ async function streamAsk(userText, signal, onDelta) {
     const body = { model: ref.model, max_tokens: 4096, stream: true, messages: [{ role: "user", content: userText }] };
     if (sys) body.system = sys;
     if (temp != null) body.temperature = temp;
+    if (topP != null) body.top_p = topP;
+    if (topK != null) body.top_k = topK;
     const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
     const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal });
     if (!resp.ok) throw new Error(await errText(resp));

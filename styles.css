@@ -100,6 +100,8 @@ svg { display: block; }
 }
 #sidebar.collapsed { margin: 0; border: none; box-shadow: none; }
 #sidebar .top { padding: 30px 10px 4px; min-width: 200px; -webkit-app-region: drag; }   /* top strip hosts the traffic lights */
+/* Windows/Linux: no traffic lights on the left, so reclaim that empty top-left space — lift 新对话 up */
+[data-platform="win"] #sidebar .top, [data-platform="other"] #sidebar .top { padding-top: 10px; }
 #sidebar .top #new-chat, #sidebar .top #conv-search-wrap { -webkit-app-region: no-drag; }
 #new-chat {
   width: 100%;
@@ -327,7 +329,11 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .about-update { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .about-update-status { font-size: 12px; color: var(--text-dim); }
 .about-desc { font-size: 13.5px; color: var(--text-dim); line-height: 1.6; max-width: 420px; margin: 16px 0 0; }
-.about-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 14px; font-variant-numeric: tabular-nums; opacity: .8; }
+.about-features { list-style: none; margin: 18px 0 0; padding: 16px 0 2px; border-top: 1px solid var(--border); width: 100%; max-width: 430px; text-align: left; display: flex; flex-direction: column; gap: 12px; }
+.about-features li { display: grid; grid-template-columns: 76px 1fr; gap: 12px; align-items: baseline; }
+.about-features .af-k { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.about-features .af-v { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.about-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 18px; font-variant-numeric: tabular-nums; opacity: .8; }
 
 /* ---- suggested-model chips (manage models) ---- */
 .sugg-group { margin-bottom: 11px; }
@@ -482,8 +488,8 @@ svg.ic { display: block; flex-shrink: 0; }
 .edit-bar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
 /* Empty state */
-#empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 10px; }
-#empty .logo { line-height: 0; color: var(--text); opacity: .9; }
+#empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 12px; padding-bottom: 13vh; }
+#empty .logo { line-height: 0; color: var(--text); opacity: .9; margin-bottom: 4px; }
 #empty h2 { color: var(--text); margin: 0; font-weight: 600; }
 #empty-guide { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; color: var(--text-dim); text-align: center; }
 #empty-guide .gr { display: flex; align-items: center; justify-content: center; gap: 7px; }
@@ -662,8 +668,6 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .enabled-row .rm { flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--text-dim); cursor: pointer; padding: 4px; border-radius: 6px; opacity: .5; transition: opacity .12s, color .12s, background .12s; }
 .enabled-row:hover .rm { opacity: 1; }
 .enabled-row .rm:hover { color: var(--danger); background: var(--bg-soft); }
-.pop-item .pi-name { display: block; }
-.pop-item .pi-id { display: block; font-size: 11px; color: var(--text-dim); margin-top: 1px; }
 .or-count { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--text-dim); padding: 2px 2px 7px; }
 #fetch-or { color: var(--text-dim); text-decoration: none; font-weight: 500; }
 #fetch-or:hover { color: var(--text); text-decoration: underline; }
@@ -696,7 +700,7 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .btn:hover { filter: brightness(1.06); }
 
 /* ---------- Toast ---------- */
-#toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%) translateY(-20px); background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; font-size: 13px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 100; max-width: 80vw; text-align: center; }
+#toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%) translateY(-20px); background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); box-shadow: var(--shadow-pop); padding: 9px 17px; border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; z-index: 100; max-width: 80vw; text-align: center; }
 #toast .toast-action { pointer-events: auto; margin-left: 14px; background: transparent; border: none; color: var(--text); font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; padding: 0; }
 #toast .toast-action:hover { color: var(--text-dim); }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -748,7 +752,9 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .set-row-c select:focus, .set-row-c input:focus { border-color: var(--accent); }
 .set-row-c select { width: 230px; }
 .set-row-c input[type=number] { width: 116px; }
+.set-row-c input[type=text] { width: 150px; }
 .set-row-c .range-wrap { width: 240px; }
+.set-row-c #proxy-test { margin-right: 9px; }
 
 /* full-width stacked block (textarea etc.) within the borderless layout */
 .set-block { padding: 15px 2px; border-bottom: 1px solid var(--border); }
@@ -792,10 +798,10 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .ms-field input:focus { border-color: var(--accent); }
 .ms-field .key-row2 { margin-top: 9px; }
 .ms-enabled { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-.ms-en-row { display: flex; align-items: center; gap: 9px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 9px; padding: 5px 6px 5px 11px; }
-.ms-en-id { font-family: "SF Mono", Menlo, Monaco, Consolas, monospace; font-size: 11.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; max-width: 46%; }
-.ms-en-name { flex: 1; min-width: 0; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; color: var(--text); font-size: 13px; font-family: inherit; outline: none; }
-.ms-en-name:focus { border-color: var(--accent); }
+.ms-en-row { display: flex; align-items: center; gap: 9px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 9px; padding: 7px 6px 7px 11px; }
+.ms-en-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ms-en-name { font-size: 13.5px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ms-en-id { font-family: "SF Mono", Menlo, Monaco, Consolas, monospace; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ms-en-row .rm { background: none; border: none; color: var(--text-dim); cursor: pointer; display: inline-flex; padding: 4px; border-radius: 6px; flex-shrink: 0; }
 .ms-en-row .rm:hover { color: var(--danger); background: var(--bg-soft); }
 .ms-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
@@ -875,24 +881,27 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 [data-theme="light"] .btn.danger { color: #fff; }
 @media (prefers-reduced-motion: reduce) { #confirm-bg.show #confirm-box { animation: none; } }
 
-/* ---- code color theme: high-contrast preset (toggled via [data-hl] on <html>) ---- */
+/* ---- code color theme: 高对比 — punchy & max-legible: bright/saturated warm tokens, white(/black)
+   names, bold keywords. Distinct from 柔和 (same hues but desaturated) and 多彩 (cool rainbow). ---- */
 [data-hl="contrast"] {
-  --hl-comment: #7d7d7d;
-  --hl-keyword: #e08a5a;
-  --hl-string: #b6cf7e;
-  --hl-number: #e6b266;
-  --hl-title: #f0e6cc;
-  --hl-attr: #e6b266;
-  --hl-meta: #b0b0b0;
+  --hl-comment: #6b7177;   /* dim gray so comments recede and code pops harder */
+  --hl-keyword: #ff9d48;   /* bright orange */
+  --hl-string:  #bde86a;   /* bright lime */
+  --hl-number:  #ffc64a;   /* bright amber */
+  --hl-title:   #ffffff;   /* pure white — function / class names pop hardest */
+  --hl-attr:    #ffc64a;
+  --hl-meta:    #aab1b8;
 }
+[data-hl="contrast"] .hljs-keyword, [data-hl="contrast"] .hljs-built_in, [data-hl="contrast"] .hljs-title,
+[data-hl="contrast"] .hljs-title.function_, [data-hl="contrast"] .hljs-title.class_ { font-weight: 600; }
 [data-theme="light"][data-hl="contrast"] {
-  --hl-comment: #6f6f6f;
-  --hl-keyword: #c0461f;
-  --hl-string: #426016;
-  --hl-number: #8a5300;
-  --hl-title: #111111;
-  --hl-attr: #8a5300;
-  --hl-meta: #6f6f6f;
+  --hl-comment: #6b7177;
+  --hl-keyword: #b8360a;   /* deep saturated orange-red */
+  --hl-string:  #2f6310;   /* deep green */
+  --hl-number:  #8a4b00;   /* deep amber */
+  --hl-title:   #000000;   /* pure black */
+  --hl-attr:    #8a4b00;
+  --hl-meta:    #585f66;
 }
 
 /* ---- code color theme: 多彩 (GitHub palette — distinct hue per token; toggled via [data-hl="vivid"]) ---- */

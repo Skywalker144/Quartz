@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("chatbox", {
   platform: process.platform,
   setTitleBarOverlay: (opts) => ipcRenderer.send("set-titlebar-overlay", opts),
+  setProxy: (cfg) => ipcRenderer.invoke("set-proxy", cfg),
+  testProxy: () => ipcRenderer.invoke("test-proxy"),
   // --- main app window ---
   onMenu: (cb) => ipcRenderer.on("menu", (_e, action) => cb(action)),
   onQuickOpen: (cb) => ipcRenderer.on("quick-open", (_e, payload) => cb(payload)),

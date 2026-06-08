@@ -176,10 +176,11 @@ function freshState() {
       defaults: {
         chat: { provider: "openrouter", model: "anthropic/claude-sonnet-4.6" },
         title: { provider: "openrouter", model: "google/gemini-3-flash-preview" },
-        promptId: "daily-default", temp: 1, maxTokens: null,
+        promptId: "daily-default", temp: 1, maxTokens: null, topP: null, topK: null,
       },
       sidebar: { width: 264, collapsed: false },
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
+      proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
       tempBumped: true,
     },
     conversations: [],
@@ -302,6 +303,7 @@ function ensureShape(s) {
   s.settings.defaults = Object.assign({}, f.settings.defaults, s.settings.defaults);
   s.settings.sidebar = Object.assign({}, f.settings.sidebar, s.settings.sidebar);
   s.settings.quick = Object.assign({}, f.settings.quick, s.settings.quick);
+  s.settings.proxy = Object.assign({}, f.settings.proxy, s.settings.proxy);
   // One-time: move the quick bar onto its dedicated concise prompt (was "default").
   if (!s.settings.quick.promptModeMigrated) {
     if (!s.settings.quick.promptMode || s.settings.quick.promptMode === "default") s.settings.quick.promptMode = "concise";
@@ -317,6 +319,17 @@ function ensureShape(s) {
   // One-time: bump the legacy 0.7 default temperature up to 1
   if (!hadTempBumped && s.settings.defaults.temp === 0.7) s.settings.defaults.temp = 1;
   s.settings.tempBumped = true;
+
+  // One-time: re-point existing installs onto the new global-shortcut defaults (quick = Alt+Space,
+  // open-main = ⌘⇧L / Alt+Shift+L) — but only when still on a prior default, never overriding a custom binding.
+  if (!s.settings.shortcutsBumpedV2) {
+    const q = s.settings.quick;
+    const OLD_QUICK = ["Alt+Space", "Ctrl+Shift+Space"];      // prior mac / win quick-ask defaults
+    const OLD_OPEN = ["Alt+Cmd+Space", "Ctrl+Alt+Space"];     // prior mac / win open-main defaults
+    if (!q.shortcut || OLD_QUICK.includes(q.shortcut)) q.shortcut = defaultQuick();
+    if (!q.openMainShortcut || OLD_OPEN.includes(q.openMainShortcut)) q.openMainShortcut = defaultOpenMain();
+    s.settings.shortcutsBumpedV2 = true;
+  }
 
   // One-time: switch existing installs to follow the system appearance (default 跟随系统).
   // Guarded so any later manual 浅色/深色 choice still sticks.
@@ -469,16 +482,16 @@ function quickConfigPayload() {
   const q = set.quick || {};
   const providers = {};
   for (const pk of PROVIDER_ORDER) providers[pk] = { key: (set.providers[pk] && set.providers[pk].key) || "" };
-  // model: quick override, else the default chat model — carry the user's custom name for display
+  // model: quick override, else the default chat model — carry the auto-generated display name
   const chat = (q.model && q.model.provider && q.model.model) ? clone(q.model) : clone(set.defaults.chat);
-  const found = set.models.find(m => modelsEqual(m, chat));
-  if (found && found.name && found.name.trim()) chat.name = found.name.trim();
+  if (chat && chat.model) chat.name = prettyModel(chat.model, chat.provider);
   // system prompt: dedicated concise prompt (default), the app's default prompt, or none
   let system = "";
   if (q.promptMode === "default") { const pid = set.defaults.promptId; if (pid) { const p = promptById(pid); if (p) system = p.text || ""; } }
   else if (q.promptMode !== "none") system = (q.concisePrompt != null ? q.concisePrompt : QUICK_PROMPT);   // "concise" — user-editable
   return {
     providers, chat, theme: set.appearance.theme, system, temp: set.defaults.temp,
+    topP: set.defaults.topP, topK: set.defaults.topK,
     enabled: q.enabled !== false,
     shortcut: q.shortcut || defaultQuick(),
     closeOnBlur: q.closeOnBlur !== false,
@@ -507,23 +520,27 @@ function modelsEqual(a, b) { return !!a && !!b && a.provider === b.provider && a
 function hasModel(r) { return state.settings.models.some(m => modelsEqual(m, r)); }
 function addModel(r) { if (!hasModel(r)) { state.settings.models.push({ provider: r.provider, model: r.model }); save(); } }
 function removeModel(r) { state.settings.models = state.settings.models.filter(m => !modelsEqual(m, r)); save(); }
-function enabledModel(ref) { return state.settings.models.find(m => m.provider === ref.provider && m.model === ref.model) || null; }
-// Friendly short model name: drop the "org/" prefix and any ":tag", brand-case the rest.
 const MODEL_BRANDS = { gpt: "GPT", claude: "Claude", gemini: "Gemini", deepseek: "DeepSeek", llama: "Llama", mistral: "Mistral", mixtral: "Mixtral", qwen: "Qwen", grok: "Grok", phi: "Phi", gemma: "Gemma", command: "Command", sonar: "Sonar", kimi: "Kimi", glm: "GLM", nova: "Nova", yi: "Yi" };
-function prettyModel(id) {
-  let s = String(id || "");
-  const slash = s.lastIndexOf("/"); if (slash >= 0) s = s.slice(slash + 1);
-  s = s.replace(/:.*$/, "");
-  if (!s) return String(id || "");
-  return s.split(/[-_]/).map(t => {
-    if (!t) return "";
-    const low = t.toLowerCase();
-    if (MODEL_BRANDS[low]) return MODEL_BRANDS[low];
-    if (/\d/.test(t)) return t;                       // version tokens (4.6, 5.5, 4o, v4) kept as-is
-    return t.charAt(0).toUpperCase() + t.slice(1);
-  }).filter(Boolean).join(" ");
+function prettyToken(t) {
+  if (!t) return "";
+  const low = t.toLowerCase();
+  if (MODEL_BRANDS[low]) return MODEL_BRANDS[low];     // brand acronyms: GPT / Claude / DeepSeek / Qwen / GLM …
+  if (/^\d/.test(t)) return t;                          // version starting with a digit, kept verbatim: 4.6, 4o, 3.5
+  return t.charAt(0).toUpperCase() + t.slice(1);        // capitalize the leading letter: v4→V4, flash→Flash, qwen3.7→Qwen3.7
 }
-function modelLabel(ref) { const m = enabledModel(ref); return (m && m.name && m.name.trim()) ? m.name : prettyModel(ref.model); }
+// Auto display name from a model id, tuned per provider:
+//  · OpenRouter / OpenAI / DeepSeek / Google: drop the "org/" prefix and any ":tag", split on "-"/"_",
+//    then brand-case or capitalize each word (deepseek-v4-flash → DeepSeek V4 Flash, gpt-5.5 → GPT 5.5).
+//  · Anthropic native ids encode the version with dashes (claude-opus-4-8) — fold "<digit>-<digit>" into "4.8" first.
+function prettyModel(id, provider) {
+  let s = String(id || "");
+  const slash = s.lastIndexOf("/"); if (slash >= 0) s = s.slice(slash + 1);    // strip "anthropic/" etc.
+  s = s.replace(/:.*$/, "");                                                     // strip ":free" / ":beta"
+  if (!s) return String(id || "");
+  if (provider === "anthropic") s = s.replace(/(\d)-(\d)/g, "$1.$2");            // claude-opus-4-8 → claude-opus-4.8
+  return s.split(/[-_]/).map(prettyToken).filter(Boolean).join(" ");
+}
+function modelLabel(ref) { return prettyModel(ref.model, ref.provider); }   // names are auto-generated; no manual override
 // First time a provider gets an API key: wire up sensible models/defaults so it works out of the box.
 function onProviderConnected(pk) {
   if (pk === "deepseek") {
@@ -679,6 +696,10 @@ function toast(msg, action) {
     btn.onclick = () => { clearTimeout(t._t); t.classList.remove("show"); action.fn(); };
     t.appendChild(btn);
   }
+  // Center over the chat area (matching #status-banner) instead of the whole window — stays put even with the
+  // sidebar/modal open (kept on <body> so it still layers above modals; only the horizontal centre is retargeted).
+  const main = document.getElementById("main");
+  if (main) { const r = main.getBoundingClientRect(); t.style.left = Math.round(r.left + r.width / 2) + "px"; }
   t.classList.add("show");
   clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), action ? 6000 : 2800);
 }
@@ -697,12 +718,23 @@ function applyTheme() {
   document.documentElement.setAttribute("data-theme", resolved);
   syncTitleBarOverlay();
 }
-// Keep the Windows/Linux native window-controls overlay matching the current theme colours.
+// multiply a #rrggbb colour toward black by factor f (0..1) — used to dim the native controls under a modal scrim
+function dimHex(hex, f) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim()); if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = Math.round(((n >> 16) & 255) * f), g = Math.round(((n >> 8) & 255) * f), b = Math.round((n & 255) * f);
+  return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+function anyModalOpen() { return ["modal-bg", "confirm-bg"].some(id => { const e = document.getElementById(id); return e && e.classList.contains("show"); }); }
+// Keep the Windows/Linux native window-controls overlay matching the current theme colours. While a modal is open
+// the page sits under a 50% black scrim, but Windows draws the controls ABOVE the web layer so they stay bright and
+// "pop" — dim them to match so the whole window greys out together.
 function syncTitleBarOverlay() {
   if (!window.chatbox || !window.chatbox.setTitleBarOverlay || window.chatbox.platform === "darwin") return;
   const cs = getComputedStyle(document.documentElement);
-  const color = (cs.getPropertyValue("--bg") || "#1c1c1c").trim();
-  const symbolColor = (cs.getPropertyValue("--text") || "#d3d3d3").trim();
+  let color = (cs.getPropertyValue("--bg") || "#1c1c1c").trim();
+  let symbolColor = (cs.getPropertyValue("--text") || "#d3d3d3").trim();
+  if (anyModalOpen()) { color = dimHex(color, 0.5); symbolColor = dimHex(symbolColor, 0.5); }   // match the rgba(0,0,0,.5) scrim
   window.chatbox.setTitleBarOverlay({ color, symbolColor, height: 60 });
 }
 function applyFont() {
@@ -720,6 +752,12 @@ function setContentPct(pct, persist) {
 function applyContentWidth() {
   const p = Math.min(100, Math.max(50, state.settings.appearance.contentPct || 90));
   document.documentElement.style.setProperty("--content-width", p + "%");
+}
+// Route all model API requests through the configured local proxy (Clash/V2Ray), or direct when disabled.
+function applyProxy() {
+  if (window.chatbox && window.chatbox.setProxy) {
+    try { return window.chatbox.setProxy(state.settings.proxy || { enabled: false }); } catch (e) {}
+  }
 }
 function applyDensity() {
   const box = document.getElementById("messages");
@@ -1069,6 +1107,12 @@ function renderEmptyGuide() {
     wrap.appendChild(card);
   });
 }
+// Empty-home hint + example guide; reflects whether any provider has a key (refreshed live when a key is added).
+function updateEmptyHint() {
+  const h = document.getElementById("empty-hint");
+  if (h) h.textContent = anyKey() ? "输入下方消息框，或点选下面的示例开始" : "先到设置里填入任意一个模型提供方的 API Key";
+  renderEmptyGuide();
+}
 /* ===================== Export current conversation ===================== */
 function escHtml(s) { const d = document.createElement("div"); d.textContent = (s == null ? "" : String(s)); return d.innerHTML; }
 function exportFileBase(conv) {
@@ -1237,8 +1281,7 @@ function renderMessages() {
 
   if (!conv || conv.messages.length === 0) {
     box.style.display = "none"; empty.style.display = "flex";
-    document.getElementById("empty-hint").textContent = anyKey() ? "输入下方消息框，或点选下面的示例开始" : "先到设置里填入任意一个模型提供方的 API Key";
-    renderEmptyGuide();
+    updateEmptyHint();
     const fb = document.getElementById("find-bar"); if (fb) fb.hidden = true;
     return;
   }
@@ -1796,6 +1839,8 @@ async function streamChat(ref, payload, opts) {
     const body = { model: ref.model, messages: apiMessages, stream: true };
     if (opts.temp != null) body.temperature = opts.temp;
     if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+    if (opts.topP != null) body.top_p = opts.topP;
+    if (opts.topK != null && ref.provider === "openrouter") body.top_k = opts.topK;   // OpenAI/DeepSeek/Gemini-compat reject top_k
     if (ref.provider === "openrouter") {
       body.usage = { include: true };
       const plugins = [];
@@ -1830,7 +1875,11 @@ async function streamChat(ref, payload, opts) {
     const body = { model: ref.model, messages: amsgs, max_tokens: maxTok, stream: true };
     if (system) body.system = system;
     if (opts.reasoning) body.thinking = { type: "enabled", budget_tokens: _budget };
-    else if (opts.temp != null) body.temperature = opts.temp; // temperature is incompatible with extended thinking
+    else { // sampling params (temperature / top_p / top_k) are all incompatible with extended thinking
+      if (opts.temp != null) body.temperature = opts.temp;
+      if (opts.topP != null) body.top_p = opts.topP;
+      if (opts.topK != null) body.top_k = opts.topK;
+    }
     const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
     const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
     if (!resp.ok) throw Object.assign(new Error(await errText(resp)), { status: resp.status });
@@ -1938,6 +1987,8 @@ async function runCompletion(conv, opts) {
     const r = await streamChat(ref, { system: system, messages: history }, {
       temp: (d.temp != null && d.temp !== "") ? Number(d.temp) : undefined,
       maxTokens: d.maxTokens ? Number(d.maxTokens) : undefined,
+      topP: (d.topP != null && d.topP !== "") ? Number(d.topP) : undefined,
+      topK: (d.topK != null && d.topK !== "") ? Number(d.topK) : undefined,
       web: !!conv.webSearch,
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
@@ -2143,11 +2194,8 @@ function buildModelPopover() {
       const myIdx = mi++;
       const it = document.createElement("button");
       it.className = "pop-item" + (myIdx === modelPop.index ? " active" : "");
-      if (m.name && m.name.trim()) {
-        const nm = document.createElement("span"); nm.className = "pi-name"; nm.textContent = m.name;
-        const idn = document.createElement("span"); idn.className = "pi-id"; idn.textContent = m.model;
-        it.append(nm, idn);
-      } else { it.textContent = m.model; }
+      it.textContent = prettyModel(m.model, m.provider);   // name only — compact; raw id on hover
+      it.title = m.model;
       it.onclick = () => pickModel({ provider: pk, model: m.model });
       pop.appendChild(it);
     });
@@ -2312,8 +2360,8 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); switchSection(section || "services"); document.getElementById("modal-bg").classList.add("show"); }
-function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); }
+function openSettings(section) { fillSettings(); switchSection(section || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
+function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
   document.querySelectorAll("#modal-sections section").forEach(s => s.classList.toggle("hidden", s.dataset.sec !== sec));
@@ -2386,8 +2434,10 @@ function populateQuickModelSelect() {
   const dchat = state.settings.defaults.chat;
   const def = document.createElement("option");
   def.value = "__default__";
-  def.textContent = "跟随默认（" + (dchat ? prettyModel(dchat.model) : "未设置") + "）";
+  def.textContent = "跟随默认";   // model name shown in the row hint instead — keeps the select from overflowing
   sel.appendChild(def);
+  const hint = document.getElementById("quick-model-hint");
+  if (hint) hint.textContent = dchat ? ("「跟随默认」即 " + prettyModel(dchat.model, dchat.provider)) : "请先在「默认模型」里设置默认对话模型";
   state.settings.models.forEach(m => {
     const o = document.createElement("option"); o.value = refKey(m);
     o.textContent = modelLabel(m); o.title = (PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model;
@@ -2420,9 +2470,9 @@ function fmtAccel(acc) {
   const sym = { Cmd: "Win", Command: "Win", CmdOrCtrl: "Ctrl", Ctrl: "Ctrl", Control: "Ctrl", Alt: "Alt", Option: "Alt", Shift: "Shift", Super: "Win", Meta: "Win", Return: "Enter", Enter: "Enter", Space: "Space", Escape: "Esc" };
   return acc.split("+").map(p => sym[p] || p).join("+");
 }
-// Platform-appropriate default global shortcuts. Mac keeps ⌥Space / ⌥⌘Space; Windows avoids Alt+Space (system menu) and the Cmd key.
-function defaultQuick() { return isMacPlatform() ? "Alt+Space" : "Ctrl+Shift+Space"; }
-function defaultOpenMain() { return isMacPlatform() ? "Alt+Cmd+Space" : "Ctrl+Alt+Space"; }
+// Default global shortcuts. Quick-ask is ⌥/Alt+Space on both platforms; open-main mirrors macOS ⌘⇧L as Alt+Shift+L on Windows.
+function defaultQuick() { return "Alt+Space"; }
+function defaultOpenMain() { return isMacPlatform() ? "Cmd+Shift+L" : "Alt+Shift+L"; }
 // A KeyboardEvent's physical key → an Electron accelerator key token (layout-independent via e.code).
 function codeToKey(code, key) {
   code = code || "";
@@ -2481,6 +2531,8 @@ function fillSettings() {
   populateModelSelect(document.getElementById("title-model-sel"), d.title);
   document.getElementById("set-temp").value = d.temp != null ? d.temp : 1;
   document.getElementById("set-maxtok").value = d.maxTokens || "";
+  document.getElementById("set-topp").value = d.topP != null ? d.topP : "";
+  document.getElementById("set-topk").value = d.topK != null ? d.topK : "";
   // quick-ask bar
   const q = state.settings.quick;
   setToggle("set-quick-enabled-tog", q.enabled !== false);
@@ -2498,6 +2550,13 @@ function fillSettings() {
   setToggle("set-openmain-enabled-tog", q.openMainEnabled !== false);
   const omBtn = document.getElementById("set-openmain-shortcut"); if (omBtn) omBtn.textContent = fmtAccel(q.openMainShortcut || defaultOpenMain());
   setShortcutHint("openmain-shortcut-hint", "", false);
+  // network proxy
+  const px = state.settings.proxy || {};
+  setToggle("set-proxy-enabled-tog", !!px.enabled);
+  setSeg("set-proxy-scheme-seg", px.scheme === "socks5" ? "socks5" : "http");
+  document.getElementById("set-proxy-host").value = px.host || "";
+  document.getElementById("set-proxy-port").value = px.port || "";
+  const ps = document.getElementById("proxy-test-status"); if (ps) { ps.textContent = ""; ps.className = "key-test-status"; }
 }
 
 // ---- segmented controls ----
@@ -2562,7 +2621,7 @@ async function testProvider(pk, btn, status) {
 
 // ---- settings: nav icons + instant-apply wiring; called once at boot ----
 function decorateSettingsNav() {
-  const map = { services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", data: "database", about: "info" };
+  const map = { services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", network: "globe", data: "database", about: "info" };
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => {
     const name = map[b.dataset.sec];
     if (name && !b.querySelector(".ic")) b.insertAdjacentHTML("afterbegin", ic(name, 16));
@@ -2579,6 +2638,8 @@ function setupSettingsLive() {
       updateKeyDots();
       if (!had && el.value.trim()) onProviderConnected(pk);   // first time this provider gets a key
       save();
+      const emp = document.getElementById("empty");
+      if (emp && emp.style.display !== "none") updateEmptyHint();   // home page is open behind settings — refresh its hint/guide live
     });
   });
   bindSeg("set-theme-seg", v => { state.settings.appearance.theme = v; applyTheme(); save(); });
@@ -2603,6 +2664,8 @@ function setupSettingsLive() {
   document.getElementById("title-model-sel").addEventListener("change", e => { if (e.target.value) { state.settings.defaults.title = parseRefKey(e.target.value); save(); } });
   document.getElementById("set-temp").addEventListener("change", e => { const t = e.target.value; state.settings.defaults.temp = t === "" ? null : Number(t); save(); });
   document.getElementById("set-maxtok").addEventListener("change", e => { const mt = e.target.value; state.settings.defaults.maxTokens = mt === "" ? null : Number(mt); save(); });
+  document.getElementById("set-topp").addEventListener("change", e => { const v = e.target.value; state.settings.defaults.topP = v === "" ? null : Number(v); save(); });
+  document.getElementById("set-topk").addEventListener("change", e => { const v = e.target.value; state.settings.defaults.topK = v === "" ? null : Number(v); save(); });
   // ---- quick-ask bar ----
   bindToggle("set-quick-enabled-tog", on => { state.settings.quick.enabled = on; save(); });
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
@@ -2631,7 +2694,29 @@ function setupSettingsLive() {
   });
   setupShortcutRecorder("set-quick-shortcut", "quick-shortcut-hint", () => state.settings.quick.shortcut, v => state.settings.quick.shortcut = v, defaultQuick());
   setupShortcutRecorder("set-openmain-shortcut", "openmain-shortcut-hint", () => state.settings.quick.openMainShortcut, v => state.settings.quick.openMainShortcut = v, defaultOpenMain());
+  // network proxy — live-apply on every change
+  bindToggle("set-proxy-enabled-tog", on => { state.settings.proxy.enabled = on; save(); applyProxy(); });
+  bindSeg("set-proxy-scheme-seg", v => { state.settings.proxy.scheme = v; save(); applyProxy(); });
+  document.getElementById("set-proxy-host").addEventListener("input", e => { state.settings.proxy.host = e.target.value.trim(); save(); applyProxy(); });
+  document.getElementById("set-proxy-port").addEventListener("input", e => { state.settings.proxy.port = e.target.value.trim(); save(); applyProxy(); });
+  document.getElementById("proxy-test").addEventListener("click", testProxy);
   document.getElementById("modal-close").onclick = closeSettings;
+}
+// Probe connectivity through the current proxy. Runs in the MAIN process (net.request) — a renderer fetch from a
+// file:// page is blocked by CORS on no-CORS-header endpoints, which would fail regardless of the proxy.
+async function testProxy() {
+  const ps = document.getElementById("proxy-test-status"); if (!ps) return;
+  const btn = document.getElementById("proxy-test");
+  ps.className = "key-test-status"; ps.textContent = "测试中…";
+  if (btn) { btn.disabled = true; btn.textContent = "测试中…"; }
+  try {
+    await applyProxy();                                    // make sure the latest config is live first
+    const r = (window.chatbox && window.chatbox.testProxy) ? await window.chatbox.testProxy() : { ok: false, error: "不可用" };
+    if (r && r.ok) { ps.className = "key-test-status ok"; ps.textContent = "✓ 连接正常 · " + r.ms + "ms"; }
+    else { ps.className = "key-test-status bad"; ps.textContent = "✗ 连接失败：" + ((r && r.error) || "未知"); }
+  } catch (e) {
+    ps.className = "key-test-status bad"; ps.textContent = "✗ 连接失败：" + ((e && e.message) || "未知");
+  } finally { if (btn) { btn.disabled = false; btn.textContent = "测试"; } }
 }
 
 function setShortcutHint(id, text, bad) {
@@ -2691,12 +2776,12 @@ function confirmDialog(opts) {
     ok.textContent = opts.okText || "确定";
     ok.classList.toggle("danger", opts.danger !== false);
     cancel.textContent = opts.cancelText || "取消";
-    bg.classList.add("show");
+    bg.classList.add("show"); syncTitleBarOverlay();
     setTimeout(() => ok.focus(), 0);
   });
 }
 function closeConfirm(result) {
-  document.getElementById("confirm-bg").classList.remove("show");
+  document.getElementById("confirm-bg").classList.remove("show"); syncTitleBarOverlay();
   const r = _confirmResolve; _confirmResolve = null; if (r) r(result);
 }
 
@@ -2798,12 +2883,13 @@ function renderMsEnabled(pk) {
   if (!list.length) { box.innerHTML = '<div class="enabled-empty">还没启用模型 — 点下面「从 API 获取模型」或推荐项添加</div>'; return; }
   list.forEach(m => {
     const row = document.createElement("div"); row.className = "ms-en-row";
+    const main = document.createElement("div"); main.className = "ms-en-main";
+    const nm = document.createElement("span"); nm.className = "ms-en-name"; nm.textContent = prettyModel(m.model, m.provider);   // auto-generated display name
     const id = document.createElement("span"); id.className = "ms-en-id"; id.textContent = m.model; id.title = m.model;
-    const nm = document.createElement("input"); nm.className = "ms-en-name"; nm.value = m.name || ""; nm.placeholder = "自定义名称（可选）";
-    nm.onchange = () => { m.name = nm.value.trim(); save(); updateModelPill(); };
+    main.append(nm, id);
     const x = document.createElement("button"); x.className = "rm"; x.title = "移除"; x.innerHTML = ic("x", 14);
     x.onclick = () => { removeModel(m); renderMsDetail(); updateModelPill(); };
-    row.append(id, nm, x); box.appendChild(row);
+    row.append(main, x); box.appendChild(row);
   });
 }
 function msModelRow(pk, m) {
@@ -2815,8 +2901,10 @@ function msModelRow(pk, m) {
     row.classList.toggle("on", cb.checked); renderMsEnabled(pk); renderMsProviders(); updateModelPill();
   };
   const main = document.createElement("span"); main.className = "or-main";
-  const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = m.name || m.id; main.appendChild(nm);
-  if (m.name && m.name !== m.id) { const idEl = document.createElement("span"); idEl.className = "or-id"; idEl.textContent = m.id; main.appendChild(idEl); }
+  // prefer a real provider-supplied name; otherwise auto-generate from the id (recommended chips pass name===id)
+  const disp = (m.name && m.name !== m.id) ? m.name : prettyModel(m.id, pk);
+  const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = disp; main.appendChild(nm);
+  if (disp !== m.id) { const idEl = document.createElement("span"); idEl.className = "or-id"; idEl.textContent = m.id; main.appendChild(idEl); }
   row.append(cb, main);
   if (pk === "openrouter") { const meta = document.createElement("span"); meta.className = "or-meta"; meta.innerHTML = orBadges(m); row.appendChild(meta); }
   return row;
@@ -3346,6 +3434,7 @@ function applySeed(seed) {
   applyFont();
   applyContentWidth();
   applyCodeTheme();
+  applyProxy();          // route API traffic through the saved proxy before any request fires
   renderAll();
   applyDensity();
   updateComposerHint();

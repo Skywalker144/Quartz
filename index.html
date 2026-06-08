@@ -77,7 +77,7 @@
       <div id="messages"></div>
 
       <div id="empty">
-        <div class="logo"><svg viewBox="0 0 24 24" width="48" height="48" class="empty-crystal" aria-hidden="true">
+        <div class="logo"><svg viewBox="0 0 24 24" width="70" height="70" class="empty-crystal" aria-hidden="true">
           <polygon points="7,8.5 10.2,8.5 10.2,15.5 7,15.5" fill="currentColor" opacity=".72"/>
           <polygon points="10.2,8.5 13.8,8.5 13.8,15.5 10.2,15.5" fill="currentColor" opacity=".82"/>
           <polygon points="13.8,8.5 17,8.5 17,15.5 13.8,15.5" fill="currentColor" opacity=".46"/>
@@ -152,6 +152,7 @@
         <button class="nav-item" data-sec="quick">快速提问</button>
         <button class="nav-item" data-sec="shortcuts">快捷键</button>
         <div class="nav-group">应用</div>
+        <button class="nav-item" data-sec="network">网络</button>
         <button class="nav-item" data-sec="data">数据</button>
         <button class="nav-item" data-sec="about">关于</button>
       </nav>
@@ -275,6 +276,14 @@
               <div class="set-row-info"><div class="set-row-t">最大输出 Tokens</div><div class="set-row-d">单次回复长度上限，留空表示不限制</div></div>
               <div class="set-row-c"><input type="number" id="set-maxtok" min="1" step="1" placeholder="不限"></div>
             </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">Top P</div><div class="set-row-d">核采样：只在累计概率前 P 的词中取样，0–1，越低越聚焦，留空用默认</div></div>
+              <div class="set-row-c"><input type="number" id="set-topp" min="0" max="1" step="0.05" placeholder="默认"></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">Top K</div><div class="set-row-d">只在概率最高的 K 个词中取样，留空用默认；仅 OpenRouter 与 Anthropic 直连时生效</div></div>
+              <div class="set-row-c"><input type="number" id="set-topk" min="0" step="1" placeholder="默认"></div>
+            </div>
           </section>
 
           <!-- Quick-ask bar -->
@@ -296,7 +305,7 @@
               </div>
             </div>
             <div class="set-row">
-              <div class="set-row-info"><div class="set-row-t">使用的模型</div></div>
+              <div class="set-row-info"><div class="set-row-t">使用的模型</div><div class="set-row-d" id="quick-model-hint"></div></div>
               <div class="set-row-c"><select id="set-quick-model"></select></div>
             </div>
             <div class="set-row">
@@ -359,6 +368,32 @@
             </div>
           </section>
 
+          <!-- Network / proxy -->
+          <section data-sec="network" class="hidden">
+            <h3>网络代理</h3>
+            <p class="sec-desc">让所有 API 请求走本地代理（如 Clash / V2Ray）。一般只需填端口，主机默认 127.0.0.1。改动实时生效。</p>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">启用代理</div><div class="set-row-d">所有模型请求经由下方代理转发</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-proxy-enabled-tog" role="switch" aria-checked="false"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">类型</div><div class="set-row-d">Clash 混合端口选 HTTP 即可</div></div>
+              <div class="set-row-c"><div class="seg" id="set-proxy-scheme-seg"><button type="button" data-val="http">HTTP</button><button type="button" data-val="socks5">SOCKS5</button></div></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">主机</div><div class="set-row-d">本机代理一般是 127.0.0.1</div></div>
+              <div class="set-row-c"><input type="text" id="set-proxy-host" spellcheck="false" placeholder="127.0.0.1"></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">端口</div><div class="set-row-d">Clash 默认混合端口 7890</div></div>
+              <div class="set-row-c"><input type="number" id="set-proxy-port" min="1" max="65535" step="1" placeholder="7890"></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">连接测试</div><div class="set-row-d">通过当前代理访问一次外网，确认是否生效</div></div>
+              <div class="set-row-c"><button type="button" class="btn small" id="proxy-test">测试</button><span id="proxy-test-status" class="key-test-status"></span></div>
+            </div>
+          </section>
+
           <!-- Data / backup -->
           <section data-sec="data" class="hidden">
             <h3>数据备份与迁移</h3>
@@ -394,7 +429,14 @@
                 <button class="btn small" id="about-check-update" type="button">检查更新</button>
                 <span class="about-update-status" id="about-update-status"></span>
               </div>
-              <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，支持 OpenRouter / OpenAI / Anthropic / DeepSeek / Google，内置全局速答与一键导出。</p>
+              <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，专注顺手的多轮对话与隐私自主。</p>
+              <ul class="about-features">
+                <li><span class="af-k">速答浮条</span><span class="af-v">全局快捷键随处唤起 QuickBar，回车即答，可一键带入主窗口继续多轮</span></li>
+                <li><span class="af-k">节点小地图</span><span class="af-v">长对话左侧迷你导航，一眼总览、一键跳转任意一轮问答</span></li>
+                <li><span class="af-k">多家模型</span><span class="af-v">OpenRouter · OpenAI · Anthropic · DeepSeek · Gemini 自由切换</span></li>
+                <li><span class="af-k">思考与联网</span><span class="af-v">展示推理过程，支持联网搜索及图片 / PDF 附件解析</span></li>
+                <li><span class="af-k">数据自主</span><span class="af-v">全部对话本地存储，支持 Markdown 导出与一键备份恢复</span></li>
+              </ul>
               <div class="about-meta" id="about-meta"></div>
             </div>
           </section>
