@@ -451,6 +451,11 @@ ipcMain.handle("test-proxy", () => new Promise((resolve) => {
 const GH_OWNER = "Skywalker144", GH_REPO = "Quartz";
 let lastUpdate = null;          // cached so the renderer can query on boot
 let pendingUpdate = null;       // { version, zipPath } once a mac update is downloaded & verified
+let macDownload = null;         // { ver, pct } while a mac self-download is in flight (guards against concurrent streams)
+let autoUpdateOn = true;        // when false, skip the launch + daily auto-checks (manual "检查更新" still works)
+function autoUpdatePath() { return path.join(app.getPath("userData"), "auto-update"); }
+function loadAutoUpdate() { try { autoUpdateOn = fs.readFileSync(autoUpdatePath(), "utf8").trim() !== "0"; } catch (e) { autoUpdateOn = true; } return autoUpdateOn; }
+function saveAutoUpdate(on) { autoUpdateOn = !!on; try { fs.writeFileSync(autoUpdatePath(), on ? "1" : "0"); } catch (e) {} }
 function uSend(payload) {
   lastUpdate = payload;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("update-status", payload);
@@ -484,6 +489,19 @@ function downloadTo(url, dest, onProgress) {
 
 async function downloadMacUpdate(info) {
   const ver = info && info.version;
+  // Already fetched & verified this version → just re-assert "ready", don't download again.
+  if (pendingUpdate && pendingUpdate.zipPath && pendingUpdate.version === ver) {
+    uSend({ state: "ready", version: ver });
+    return;
+  }
+  // A download is already running (e.g. the launch check started one, now a manual
+  // "check for updates" fired update-available again). Don't open a second stream onto
+  // the same file — re-assert the in-flight progress so the UI doesn't stall on "checking".
+  if (macDownload) {
+    uSend({ state: "downloading", version: macDownload.ver, percent: macDownload.pct });
+    return;
+  }
+  macDownload = { ver, pct: 0 };
   const entry = ((info && info.files) || []).find(f => /-mac\.zip$/.test(f.url)) || {};
   const name = entry.url || `Quartz-${ver}-arm64-mac.zip`;
   const url = `https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/v${ver}/${name}`;
@@ -492,7 +510,7 @@ async function downloadMacUpdate(info) {
   const dest = path.join(dir, name);
   uSend({ state: "downloading", version: ver, percent: 0 });
   try {
-    await downloadTo(url, dest, (pct) => uSend({ state: "downloading", version: ver, percent: pct }));
+    await downloadTo(url, dest, (pct) => { if (macDownload) macDownload.pct = pct; uSend({ state: "downloading", version: ver, percent: pct }); });
     if (entry.sha512) {
       const got = require("crypto").createHash("sha512").update(fs.readFileSync(dest)).digest("base64");
       if (got !== entry.sha512) throw new Error("下载校验失败");
@@ -501,6 +519,8 @@ async function downloadMacUpdate(info) {
     uSend({ state: "ready", version: ver });
   } catch (e) {
     uSend({ state: "error", version: ver, message: e.message });
+  } finally {
+    macDownload = null;
   }
 }
 
@@ -547,10 +567,13 @@ function setupAutoUpdate() {
   autoUpdater.on("download-progress", (p) => { if (process.platform !== "darwin") uSend({ state: "downloading", percent: Math.round((p && p.percent) || 0) }); });
   autoUpdater.on("update-downloaded", (info) => { pendingUpdate = { version: info && info.version }; uSend({ state: "ready", version: info && info.version }); });
   autoUpdater.on("error", (e) => uSend({ state: "error", message: e && e.message }));
-  autoUpdater.checkForUpdates().catch(() => {});                                   // on launch
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 24 * 60 * 60 * 1000);   // + once a day while running
+  loadAutoUpdate();
+  if (autoUpdateOn) autoUpdater.checkForUpdates().catch(() => {});                  // on launch (unless the user turned auto-check off)
+  setInterval(() => { if (autoUpdateOn) autoUpdater.checkForUpdates().catch(() => {}); }, 24 * 60 * 60 * 1000);   // + once a day while running
 }
 ipcMain.handle("update-status-get", () => lastUpdate);
+ipcMain.handle("get-auto-update", () => loadAutoUpdate());
+ipcMain.on("set-auto-update", (_e, on) => saveAutoUpdate(on));
 ipcMain.handle("update-check", async () => {
   if (!autoUpdater || !app.isPackaged) return { state: "dev" };
   uSend({ state: "checking" });

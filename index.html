@@ -146,22 +146,59 @@
       <button id="modal-close" title="关闭（Esc）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       <nav id="modal-nav">
         <div class="modal-title">设置</div>
+        <div id="set-search-wrap">
+          <svg class="search-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="set-search" type="text" placeholder="搜索设置…" autocomplete="off" spellcheck="false">
+        </div>
         <div class="nav-group">通用</div>
-        <button class="nav-item" data-sec="appearance">外观</button>
-        <button class="nav-item" data-sec="prompts">系统提示词</button>
+        <button class="nav-item" data-sec="general" data-keywords="开机自启 自启 后台常驻 托盘 自动检查更新 更新 恢复上次对话 启动 货币单位 人民币 美元 汇率 费用 花费 计费 token 使用引导 常规 通用">常规</button>
+        <button class="nav-item" data-sec="appearance" data-keywords="主题 深色 浅色 暗色 字体 字号 排版 内容宽度 信息密度 代码配色 强调色 颜色 外观">外观</button>
+        <button class="nav-item" data-sec="prompts" data-keywords="系统提示词 提示词 prompt 角色 人设 预设">系统提示词</button>
         <div class="nav-group">模型</div>
-        <button class="nav-item active" data-sec="services">模型服务</button>
-        <button class="nav-item" data-sec="defaults">默认模型</button>
+        <button class="nav-item active" data-sec="services" data-keywords="模型服务 服务商 api key 密钥 openrouter openai anthropic deepseek google 添加模型 拉取">模型服务</button>
+        <button class="nav-item" data-sec="defaults" data-keywords="默认模型 默认 命名模型 标题模型 温度 temperature 采样 top_p top_k 最大 maxtokens">默认模型</button>
         <div class="nav-group">功能</div>
-        <button class="nav-item" data-sec="quick">快速提问</button>
-        <button class="nav-item" data-sec="shortcuts">快捷键</button>
+        <button class="nav-item" data-sec="quick" data-keywords="快速提问 速答 浮条 spotlight 全局快捷键 唤出 宽度 出现位置 点击外部">快速提问</button>
+        <button class="nav-item" data-sec="shortcuts" data-keywords="快捷键 全局 打开 quartz alt space 录制 组合键">快捷键</button>
         <div class="nav-group">应用</div>
-        <button class="nav-item" data-sec="network">网络</button>
-        <button class="nav-item" data-sec="data">数据</button>
-        <button class="nav-item" data-sec="about">关于</button>
+        <button class="nav-item" data-sec="network" data-keywords="网络 代理 proxy clash 端口 socks http 连接测试">网络</button>
+        <button class="nav-item" data-sec="data" data-keywords="数据 备份 导入 导出 清空 存储 目录 迁移">数据</button>
+        <button class="nav-item" data-sec="about" data-keywords="关于 版本 更新 检查更新 更新日志 changelog 使用指南">关于</button>
       </nav>
       <div id="modal-body">
         <div id="modal-sections">
+          <!-- General -->
+          <section data-sec="general" class="hidden">
+            <h3>常规</h3>
+            <p class="sec-desc">启动、更新与费用显示等常规设置。改动实时生效。</p>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">开机自启并常驻后台</div><div class="set-row-d">登录后在后台启动（主窗口不弹出），让速答随时可用；开启后关闭窗口会收进托盘而非退出。点托盘图标、Dock / 任务栏图标，或按打开主窗口的快捷键即可重新打开。</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-login-tog" role="switch" aria-checked="false"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">自动检查更新</div><div class="set-row-d">启动时与每天自动检查新版本；关闭后仅在「关于」里手动点「检查更新」时才查。</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-autoupdate-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">启动时恢复上次对话</div><div class="set-row-d">打开 Quartz 时回到上次正在看的那条对话；关闭则每次都从新对话开始。</div></div>
+              <div class="set-row-c"><button type="button" class="toggle" id="set-restorelast-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="group-label">费用显示</div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">货币单位</div><div class="set-row-d">token 花费按所选货币显示（各家计价原始均为美元）。</div></div>
+              <div class="set-row-c"><select id="set-currency"><option value="usd">美元 $</option><option value="cny">人民币 ¥</option></select></div>
+            </div>
+            <div class="set-row hidden" id="rate-row">
+              <div class="set-row-info"><div class="set-row-t">美元汇率</div><div class="set-row-d">1 美元 = ? 人民币，用于把花费换算成人民币。这点小额精度无所谓，按需调整即可。</div></div>
+              <div class="set-row-c"><input type="number" id="set-usdcny" min="1" max="30" step="0.1"></div>
+            </div>
+            <div class="group-label">使用引导</div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">重新查看使用引导</div><div class="set-row-d">再看一遍首次启动时的上手引导。</div></div>
+              <div class="set-row-c"><button type="button" class="btn small" id="set-show-guide">重新查看</button></div>
+            </div>
+          </section>
+
           <!-- Model services: pick a provider on the left → its key + its models on the right -->
           <section data-sec="services">
             <h3>模型服务</h3>
@@ -304,10 +341,6 @@
             <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">启用</div><div class="set-row-d">全局唤出速问浮条</div></div>
               <div class="set-row-c"><button type="button" class="toggle" id="set-quick-enabled-tog" role="switch" aria-checked="true"></button></div>
-            </div>
-            <div class="set-row">
-              <div class="set-row-info"><div class="set-row-t">开机自启并常驻后台</div><div class="set-row-d">登录后在后台启动（主窗口不弹出），让速答随时可用；开启后关闭窗口会收进托盘而非退出。点托盘图标、Dock / 任务栏图标，或按打开主窗口的快捷键即可重新打开。</div></div>
-              <div class="set-row-c"><button type="button" class="toggle" id="set-login-tog" role="switch" aria-checked="false"></button></div>
             </div>
             <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">快捷键</div></div>

@@ -49,6 +49,8 @@ function keyFor(provider) { const p = cfg && cfg.providers && cfg.providers[prov
 function applyTheme(theme) {
   const dark = theme === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : theme === "dark";
   document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  const ac = cfg && cfg.accent;   // crystal colour follows the app's 强调色 (resolved for this theme)
+  if (ac) document.documentElement.style.setProperty("--crystal", dark ? (ac.dark || ac.light) : (ac.light || ac.dark));
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (cfg && cfg.theme === "auto") applyTheme("auto"); });
 
@@ -96,10 +98,18 @@ const CJK_LETTER = "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF
 const CJK_PUNCT = "()\\[\\]{}<>\"'`!?.,:;~|@#%^&=+/\\\\\\u2018\\u2019\\u201C\\u201D\\u2013\\u2014\\u2026\\u3000-\\u303F\\uFF00-\\uFFEF";
 const EM_OPEN_RE = new RegExp("([" + CJK_LETTER + "])([*_]+)([" + CJK_PUNCT + "])", "g");
 const EM_CLOSE_RE = new RegExp("([" + CJK_PUNCT + "])([*_]+)([" + CJK_LETTER + "])", "g");
+// LLMs sometimes emit "** 文字**" — a space hugging the inside of the ** stops CommonMark from forming
+// strong emphasis. Trim those inner spaces for a PAIRED ** run on one line (leaves "2 ** 3" / code alone).
+const LOOSE_STRONG_LEAD = /\*\*[ \t]+([^\s*](?:[^\n*]*?[^\s*])?)[ \t]*\*\*/g;
+const LOOSE_STRONG_TRAIL = /\*\*([^\s*](?:[^\n*]*?[^\s*])?)[ \t]+\*\*/g;
 function fixCjkEmphasis(src) {
   if (!src || (src.indexOf("*") < 0 && src.indexOf("_") < 0)) return src;
   return src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
-    .map((seg, i) => (i % 2) ? seg : seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3"))
+    .map((seg, i) => {
+      if (i % 2) return seg;                       // inside a code span/block — leave verbatim
+      seg = seg.replace(LOOSE_STRONG_LEAD, "**$1**").replace(LOOSE_STRONG_TRAIL, "**$1**");
+      return seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3");
+    })
     .join("");
 }
 function renderMd(t) {

@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("chatbox", {
   getUpdateStatus: () => ipcRenderer.invoke("update-status-get"),
   updateAction: (action) => ipcRenderer.send("update-action", action),
   updateCheck: () => ipcRenderer.invoke("update-check"),
+  getAutoUpdate: () => ipcRenderer.invoke("get-auto-update"),
+  setAutoUpdate: (on) => ipcRenderer.send("set-auto-update", on),
 
   // --- quick-ask bar window ---
   onQuickFocus: (cb) => ipcRenderer.on("quick-focus", (_e, cfg) => cb(cfg)),

@@ -75,7 +75,7 @@ body { font-family: var(--font-family); -webkit-user-select: none; user-select: 
 /* streaming loader — the Quartz crystal with a highlight rotating around its facets */
 .qz-load { display: inline-flex; vertical-align: -6px; margin-left: 2px; }
 .qz-crystal { width: 24px; height: 24px; }
-.qz-crystal .qc, .qz-crystal .qc-center { fill: var(--text); }
+.qz-crystal .qc, .qz-crystal .qc-center { fill: var(--crystal, var(--text)); }
 .qz-crystal .qc-center { opacity: .26; }
 .qz-crystal .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }
 .qz-crystal .p1 { animation-delay: 0s; } .qz-crystal .p2 { animation-delay: -.175s; }

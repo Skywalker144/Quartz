@@ -166,7 +166,7 @@ function freshState() {
   return {
     settings: {
       providers: { openrouter: { key: "" }, openai: { key: "" }, anthropic: { key: "" }, deepseek: { key: "" }, google: { key: "" } },
-      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid", accent: "amethyst", accentCustom: "#bd9cff" },
+      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid", accent: "clear", accentCustom: "#d6d6d6" },
       models: [],   // empty on a fresh install — the user adds their own; the first one added becomes the default
       prompts: [{ id: "daily-default", name: "日常", text: DAILY_PROMPT }, { id: "expert-default", name: "深度", text: EXPERT_PROMPT }],
       defaults: {
@@ -177,6 +177,7 @@ function freshState() {
       sidebar: { width: 264, collapsed: false },
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
+      general: { currency: "usd", usdCny: 7.2, restoreLast: true },
       tempBumped: true,
       guideSeen: false,
     },
@@ -301,10 +302,19 @@ function ensureShape(s) {
   s.settings.sidebar = Object.assign({}, f.settings.sidebar, s.settings.sidebar);
   s.settings.quick = Object.assign({}, f.settings.quick, s.settings.quick);
   s.settings.proxy = Object.assign({}, f.settings.proxy, s.settings.proxy);
+  s.settings.general = Object.assign({}, f.settings.general, s.settings.general);
   // One-time: move the quick bar onto its dedicated concise prompt (was "default").
   if (!s.settings.quick.promptModeMigrated) {
     if (!s.settings.quick.promptMode || s.settings.quick.promptMode === "default") s.settings.quick.promptMode = "concise";
     s.settings.quick.promptModeMigrated = true;
+  }
+
+  // One-time: flip the old amethyst default crystal to the neutral 白水晶 (matches the monochrome UI).
+  // Guarded so a later deliberate amethyst pick still sticks.
+  if (!s.settings.accentDefaultedClear) {
+    if (s.settings.appearance.accent === "amethyst") s.settings.appearance.accent = "clear";
+    if (s.settings.appearance.accentCustom === "#bd9cff") s.settings.appearance.accentCustom = "#d6d6d6";
+    s.settings.accentDefaultedClear = true;
   }
 
   if (!hadModels) s.settings.models = [];
@@ -487,7 +497,7 @@ function quickConfigPayload() {
   if (q.promptMode === "default") { const pid = set.defaults.promptId; if (pid) { const p = promptById(pid); if (p) system = p.text || ""; } }
   else if (q.promptMode !== "none") system = (q.concisePrompt != null ? q.concisePrompt : QUICK_PROMPT);   // "concise" — user-editable
   return {
-    providers, chat, theme: set.appearance.theme, system, temp: set.defaults.temp,
+    providers, chat, theme: set.appearance.theme, accent: accentPair(), system, temp: set.defaults.temp,
     topP: set.defaults.topP, topK: set.defaults.topK,
     enabled: q.enabled !== false,
     shortcut: q.shortcut || defaultQuick(),
@@ -687,10 +697,19 @@ const CJK_LETTER = "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF
 const CJK_PUNCT = "()\\[\\]{}<>\"'`!?.,:;~|@#%^&=+/\\\\\\u2018\\u2019\\u201C\\u201D\\u2013\\u2014\\u2026\\u3000-\\u303F\\uFF00-\\uFFEF";
 const EM_OPEN_RE = new RegExp("([" + CJK_LETTER + "])([*_]+)([" + CJK_PUNCT + "])", "g");
 const EM_CLOSE_RE = new RegExp("([" + CJK_PUNCT + "])([*_]+)([" + CJK_LETTER + "])", "g");
+// LLMs sometimes emit "** 文字**" / "** 文字 **" — a space hugging the inside of the ** stops CommonMark
+// from forming strong emphasis, so it renders literally. Trim those inner spaces, but only for a PAIRED
+// ** run on one line (so "2 ** 3" with no closer, or a code span, is left alone). Lenient like ChatGPT.
+const LOOSE_STRONG_LEAD = /\*\*[ \t]+([^\s*](?:[^\n*]*?[^\s*])?)[ \t]*\*\*/g;
+const LOOSE_STRONG_TRAIL = /\*\*([^\s*](?:[^\n*]*?[^\s*])?)[ \t]+\*\*/g;
 function fixCjkEmphasis(src) {
   if (!src || (src.indexOf("*") < 0 && src.indexOf("_") < 0)) return src;
   return src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
-    .map((seg, i) => (i % 2) ? seg : seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3"))
+    .map((seg, i) => {
+      if (i % 2) return seg;                       // inside a code span/block — leave verbatim
+      seg = seg.replace(LOOSE_STRONG_LEAD, "**$1**").replace(LOOSE_STRONG_TRAIL, "**$1**");
+      return seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3");
+    })
     .join("");
 }
 
@@ -714,12 +733,28 @@ function sanitizeHtml(html) {
     ALLOW_DATA_ATTR: false,
   });
 }
+// Cost is charged in USD; the user can display it in USD or CNY (fixed, editable rate — see 设置 → 常规).
+function curUnit() { const g = (state && state.settings && state.settings.general) || {}; return g.currency === "cny" ? "cny" : "usd"; }
+function curSym() { return curUnit() === "cny" ? "¥" : "$"; }
+function usdToCny() { const g = (state && state.settings && state.settings.general) || {}; const r = Number(g.usdCny); return (r > 0 && isFinite(r)) ? r : 7.2; }
+function convAmt(usd) { return curUnit() === "cny" ? usd * usdToCny() : usd; }
+function trimNum(s) { return s.indexOf(".") >= 0 ? s.replace(/0+$/, "").replace(/\.$/, "") : s; }
+// Clean, friendly inline cost: 2 decimals, or "<¥0.01" when under one cent (hover the element for the exact value).
 function fmtCost(c) {
   if (c == null) return "";
-  if (c === 0) return "$0";
-  if (c < 0.000001) return "<$0.000001";
-  if (c < 0.01) return "$" + c.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-  return "$" + c.toFixed(4);
+  const sym = curSym(), v = convAmt(c);
+  if (v === 0) return sym + "0";
+  if (v < 0.01) return "<" + sym + "0.01";
+  return sym + v.toFixed(2);
+}
+// Exact cost for tooltips — full precision in the chosen currency (plus the USD source when showing CNY).
+function fmtCostExact(c) {
+  if (c == null) return "";
+  const sym = curSym(), v = convAmt(c);
+  if (v === 0) return sym + "0";
+  const body = sym + trimNum(v < 0.01 ? v.toFixed(6) : v.toFixed(4));
+  if (curUnit() === "cny") return body + "（$" + trimNum(c < 0.01 ? c.toFixed(6) : c.toFixed(4)) + " × " + usdToCny() + "）";
+  return body;
 }
 function fmtTok(n) { return (n || 0).toLocaleString("en-US"); }
 function convTotals(conv) {
@@ -775,9 +810,17 @@ const ACCENT_COLORS = {
 function accentHex() {
   const a = state.settings.appearance;
   if (a.accent === "custom") return a.accentCustom || "#a99cd6";   // user-picked, same hue in both themes
-  const c = ACCENT_COLORS[a.accent] || ACCENT_COLORS.amethyst;
+  const c = ACCENT_COLORS[a.accent] || ACCENT_COLORS.clear;
   const theme = document.documentElement.getAttribute("data-theme") || "dark";
   return theme === "light" ? c.light : c.dark;
+}
+// Both light & dark hexes for the current accent, so the quick-bar (a separate window that resolves its
+// own light/dark) can colour its crystal to match the app instead of staying monochrome.
+function accentPair() {
+  const a = state.settings.appearance;
+  if (a.accent === "custom") { const h = a.accentCustom || "#d6d6d6"; return { light: h, dark: h }; }
+  const c = ACCENT_COLORS[a.accent] || ACCENT_COLORS.clear;
+  return { light: c.light, dark: c.dark };
 }
 function applyAccent() {
   if (!state) return;
@@ -791,7 +834,7 @@ function renderAccentSwatches() {
   if (!wrap || !state) return;
   const preview = document.getElementById("accent-preview");
   if (preview && !preview.firstChild) preview.innerHTML = CRYSTAL_FACETS;   // the showcase gem (coloured by --crystal)
-  const cur = state.settings.appearance.accent || "amethyst";
+  const cur = state.settings.appearance.accent || "clear";
   const theme = document.documentElement.getAttribute("data-theme") || "dark";
   wrap.innerHTML = "";
   Object.keys(ACCENT_COLORS).forEach(key => {
@@ -963,6 +1006,7 @@ let lastConvSeen = null;   // for the fade-in-on-conversation-switch animation
 // One consistent monochrome SVG icon set (stroke = currentColor). ic(name,size) -> svg string.
 const ICON_PATHS = {
   pin: '<line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>',
@@ -1135,6 +1179,25 @@ function scrollActiveConvIntoView() {
 
 /* ===================== Archive (recycle bin for deleted conversations) ===================== */
 let archiveOpen = false;
+// Once the archive list is expanded, a click anywhere outside it (chat blank space, sidebar, etc.) collapses it.
+function archiveOutside(e) {
+  const wrap = document.getElementById("archive-list-wrap");
+  const toggle = document.getElementById("archive-toggle");
+  if (wrap && wrap.contains(e.target)) return;        // clicking an archived item (restore / delete) keeps it open
+  if (toggle && toggle.contains(e.target)) return;    // the toggle handles its own collapse via onclick
+  collapseArchive();
+}
+function collapseArchive() {
+  document.removeEventListener("mousedown", archiveOutside, true);
+  if (!archiveOpen) return;
+  archiveOpen = false; renderArchive();
+}
+function setArchiveOpen(open) {
+  document.removeEventListener("mousedown", archiveOutside, true);
+  archiveOpen = open;
+  if (open) setTimeout(() => document.addEventListener("mousedown", archiveOutside, true), 0);   // skip the click that opened it
+  renderArchive();
+}
 function archiveConversation(c) {
   state.conversations = state.conversations.filter(x => x.id !== c.id);
   state.archived = state.archived || [];
@@ -1183,11 +1246,11 @@ function renderArchive() {
   if (!toggle || !wrap) return;
   toggle.innerHTML = ""; wrap.innerHTML = "";
   const arr = state.archived || [];
-  if (!arr.length) { archiveOpen = false; return; }   // empty toggle is hidden via :empty
+  if (!arr.length) { archiveOpen = false; document.removeEventListener("mousedown", archiveOutside, true); return; }   // empty toggle is hidden via :empty
   toggle.classList.toggle("open", archiveOpen);
   toggle.innerHTML = '<span class="arch-caret">▸</span><span class="arch-ico">' + ic("trash", 14) + '</span><span class="arch-title">已归档</span><span class="arch-count"></span>';
   toggle.querySelector(".arch-count").textContent = arr.length;
-  toggle.onclick = () => { archiveOpen = !archiveOpen; renderArchive(); };
+  toggle.onclick = () => setArchiveOpen(!archiveOpen);
   if (!archiveOpen) return;
   const head = document.createElement("div"); head.className = "arch-head";
   head.innerHTML = '<span class="arch-head-label"></span>' +
@@ -1401,7 +1464,7 @@ function renderMessages() {
       costPill.style.display = "inline-block";
       const tokStr = fmtTok(t.pt + t.ct) + " tok";
       costPill.textContent = t.cost > 0 ? (fmtCost(t.cost) + " · " + tokStr) : tokStr;
-      costPill.title = "本轮对话累计：输入 " + fmtTok(t.pt) + " tok，输出 " + fmtTok(t.ct) + " tok" + (t.cost > 0 ? "，花费 " + fmtCost(t.cost) : "（该提供方未返回费用）");
+      costPill.title = "本轮对话累计：输入 " + fmtTok(t.pt) + " tok，输出 " + fmtTok(t.ct) + " tok" + (t.cost > 0 ? "，花费 " + fmtCostExact(t.cost) : "（该提供方未返回费用）");
     } else costPill.style.display = "none";
   } else costPill.style.display = "none";
 
@@ -1550,6 +1613,7 @@ function buildMessage(msg, index) {
   if (!isUser && msg.usage) {
     const u = msg.usage; const tot = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
     usageEl.textContent = fmtTok(u.prompt_tokens) + " ↑ + " + fmtTok(u.completion_tokens) + " ↓ = " + fmtTok(tot) + " tok" + (u.cost != null ? " · " + fmtCost(u.cost) : "");
+    if (u.cost != null && u.cost > 0) usageEl.title = "花费 " + fmtCostExact(u.cost); else usageEl.removeAttribute("title");
   }
   row.appendChild(inner); return row;
 }
@@ -2580,7 +2644,7 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); switchSection(section || (state && state.settings.lastSection) || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
+function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
 function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); maybeShowGuide(); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
@@ -2604,6 +2668,35 @@ function switchSection(sec) {
   }
   if (sec === "data") fillDataStats();
   if (sec === "about") { fillAbout(); aboutCheckUpdate(); }
+}
+
+// Live settings search (top-left of the modal): filter nav items by label + data-keywords, hide now-empty
+// group headers, and jump to the first match if the active section got filtered away.
+function filterSettingsNav(q) {
+  q = (q || "").trim().toLowerCase();
+  const items = Array.from(document.querySelectorAll("#modal-nav .nav-item"));
+  items.forEach(b => {
+    const hay = (b.textContent + " " + (b.dataset.keywords || "")).toLowerCase();
+    b.classList.toggle("hidden", q !== "" && !hay.includes(q));
+  });
+  const kids = Array.from(document.querySelectorAll("#modal-nav > .nav-group, #modal-nav > .nav-item"));
+  for (let i = 0; i < kids.length; i++) {
+    if (!kids[i].classList.contains("nav-group")) continue;
+    let anyVisible = false;
+    for (let j = i + 1; j < kids.length && !kids[j].classList.contains("nav-group"); j++) {
+      if (!kids[j].classList.contains("hidden")) { anyVisible = true; break; }
+    }
+    kids[i].classList.toggle("hidden", q !== "" && !anyVisible);
+  }
+  if (q !== "") {
+    const active = document.querySelector("#modal-nav .nav-item.active");
+    if (!active || active.classList.contains("hidden")) { const first = items.find(b => !b.classList.contains("hidden")); if (first) switchSection(first.dataset.sec); }
+  }
+}
+function bindSettingsSearch() {
+  const inp = document.getElementById("set-search"); if (!inp) return;
+  inp.addEventListener("input", () => filterSettingsNav(inp.value));
+  inp.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); inp.value = ""; filterSettingsNav(""); } });
 }
 
 // ----- Data backup / restore -----
@@ -2792,6 +2885,17 @@ function fillSettings() {
   document.getElementById("set-proxy-host").value = px.host || "";
   document.getElementById("set-proxy-port").value = px.port || "";
   const ps = document.getElementById("proxy-test-status"); if (ps) { ps.textContent = ""; ps.className = "key-test-status"; }
+  // general
+  const g = state.settings.general || {};
+  const curSel = document.getElementById("set-currency"); if (curSel) curSel.value = (g.currency === "cny" ? "cny" : "usd");
+  const rate = document.getElementById("set-usdcny"); if (rate) rate.value = (Number(g.usdCny) > 0 ? g.usdCny : 7.2);
+  updateCurrencyRows();
+  setToggle("set-restorelast-tog", g.restoreLast !== false);
+  if (window.chatbox && window.chatbox.getAutoUpdate) window.chatbox.getAutoUpdate().then(on => setToggle("set-autoupdate-tog", on)).catch(() => {});   // reflect the main-process auto-update flag
+}
+function updateCurrencyRows() {
+  const cny = !!(state.settings.general && state.settings.general.currency === "cny");
+  const rr = document.getElementById("rate-row"); if (rr) rr.classList.toggle("hidden", !cny);
 }
 
 // ---- segmented controls ----
@@ -2856,7 +2960,7 @@ async function testProvider(pk, btn, status) {
 
 // ---- settings: nav icons + instant-apply wiring; called once at boot ----
 function decorateSettingsNav() {
-  const map = { services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", network: "globe", data: "database", about: "info" };
+  const map = { general: "gear", services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", network: "globe", data: "database", about: "info" };
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => {
     const name = map[b.dataset.sec];
     if (name && !b.querySelector(".ic")) b.insertAdjacentHTML("afterbegin", ic(name, 16));
@@ -2904,6 +3008,12 @@ function setupSettingsLive() {
   // ---- quick-ask bar ----
   bindToggle("set-quick-enabled-tog", on => { state.settings.quick.enabled = on; save(); });
   bindToggle("set-login-tog", on => { if (window.chatbox && window.chatbox.setLoginItem) window.chatbox.setLoginItem(on); });
+  // ---- general ----
+  bindToggle("set-autoupdate-tog", on => { if (window.chatbox && window.chatbox.setAutoUpdate) window.chatbox.setAutoUpdate(on); });
+  bindToggle("set-restorelast-tog", on => { state.settings.general.restoreLast = on; save(); });
+  { const cs = document.getElementById("set-currency"); if (cs) cs.addEventListener("change", e => { state.settings.general.currency = (e.target.value === "cny" ? "cny" : "usd"); updateCurrencyRows(); save(); renderMessages(); }); }
+  { const rt = document.getElementById("set-usdcny"); if (rt) rt.addEventListener("input", e => { const n = Number(e.target.value); state.settings.general.usdCny = (n > 0 ? n : 7.2); save(); renderMessages(); }); }
+  { const sg = document.getElementById("set-show-guide"); if (sg) sg.onclick = openGuide; }
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
     const ce = document.getElementById("set-quick-concise");
@@ -3427,6 +3537,7 @@ window.addEventListener("resize", updateConvListFade);
 document.getElementById("open-settings").onclick = () => openSettings();
 document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "modal-bg") closeSettings(); };
 document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.onclick = () => switchSection(b.dataset.sec));
+bindSettingsSearch();
 { const de = document.getElementById("data-export"); if (de) de.onclick = exportAllData;
   const di = document.getElementById("data-import"); if (di) di.onclick = importAllData; }
 setupSettingsLive();
@@ -3774,6 +3885,7 @@ function applySeed(seed) {
   try { if (window.chatbox && window.chatbox.getSeedConfig) applySeed(await window.chatbox.getSeedConfig()); } catch (e) {}
   nextModel = clone(state.settings.defaults.chat);
   nextPromptId = state.settings.defaults.promptId || null;
+  if (state.settings.general && state.settings.general.restoreLast === false) state.currentId = null;   // start on a fresh new chat each launch
   applyTheme();
   applyFont();
   applyContentWidth();
