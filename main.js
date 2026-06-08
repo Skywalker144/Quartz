@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, globalShortcut, ipcMain, screen, dialog, safeStorage, session, net } = require("electron");
+const { app, BrowserWindow, Menu, Tray, nativeImage, shell, globalShortcut, ipcMain, screen, dialog, safeStorage, session, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -27,6 +27,10 @@ else app.commandLine.appendSwitch("password-store", "basic");
 
 let mainWindow = null;
 let quickWindow = null;
+let tray = null;
+let isQuitting = false;       // set on a real quit so close-to-tray doesn't swallow it
+let loginEnabled = false;     // cached "open at login" state; drives background (close-to-tray) mode
+let trayHintShown = false;    // show the "still running in the tray" balloon only once per session
 // Config (provider keys, default model, theme, system prompt, shortcut, …) pushed up from
 // the main app renderer. file:// pages don't share IndexedDB, so the quick bar can't read
 // the store directly — the main process caches the config here and hands it to the bar.
@@ -71,7 +75,7 @@ function saveWinState() {
   } catch (e) {}
 }
 
-function createWindow() {
+function createWindow(startHidden) {
   const isMac = process.platform === "darwin";
   const saved = loadWinState();
   const opts = {
@@ -80,6 +84,7 @@ function createWindow() {
     minWidth: 720,
     minHeight: 480,
     title: "Quartz",
+    show: !startHidden,                              // launched at login → load hidden (QuickBar works, no window pops up)
     backgroundColor: "#1c1c1c",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -107,6 +112,13 @@ function createWindow() {
   mainWindow.on("resize", scheduleWinSave);
   mainWindow.on("move", scheduleWinSave);
   mainWindow.on("close", saveWinState);
+  // Background mode (Windows/Linux, "开机自启" on): closing the window hides it to the tray instead
+  // of quitting, so the global QuickBar + tray stay alive. A real quit (tray 退出 / Ctrl+Q / updater)
+  // sets isQuitting first and falls through. macOS keeps its native "close window, app stays" behaviour.
+  mainWindow.on("close", (e) => {
+    if (isQuitting || process.platform === "darwin") return;
+    if (tray && loginEnabled) { e.preventDefault(); mainWindow.hide(); hintTrayOnce(); }
+  });
 
   // Open external (http/https) links in the user's default browser,
   // not inside the app window.
@@ -144,6 +156,43 @@ function showMainFocus() {
   const focus = () => wc.send("menu", "focus-input");
   if (fresh || wc.isLoading()) wc.once("did-finish-load", () => setTimeout(focus, 80));
   else focus();
+}
+
+/* ===================== Tray icon (Windows/Linux) ===================== */
+// macOS already has the Dock + menu bar, so we only add a tray on Windows/Linux. It's the
+// discoverable way to reopen the window (especially after a hidden login-launch) and to quit
+// the app when it's running in the background with no window open.
+function trayIconPath() {
+  const file = process.platform === "win32" ? "icon.ico" : "icon.png";
+  // packaged: copied next to the app via build.extraResources; dev: read straight from build/.
+  return app.isPackaged ? path.join(process.resourcesPath, file) : path.join(__dirname, "build", file);
+}
+function createTray() {
+  if (tray || process.platform === "darwin") return;
+  try {
+    let img = nativeImage.createFromPath(trayIconPath());
+    if (img.isEmpty()) return;                 // no icon on disk — skip rather than show a blank slot
+    img = img.resize({ width: 16, height: 16 });
+    tray = new Tray(img);
+    tray.setToolTip("Quartz");
+    const menu = Menu.buildFromTemplate([
+      { label: "打开 Quartz", click: () => showMain() },
+      { label: "快速提问", click: () => showQuick() },
+      { type: "separator" },
+      { label: "退出 Quartz", click: () => { isQuitting = true; app.quit(); } },
+    ]);
+    tray.setContextMenu(menu);
+    tray.on("click", () => showMain());        // Windows: left-click reopens the window
+    tray.on("double-click", () => showMain());
+  } catch (e) { tray = null; }
+}
+// One-time balloon so closing the window into the tray doesn't feel like the app vanished.
+function hintTrayOnce() {
+  if (trayHintShown || !tray) return;
+  trayHintShown = true;
+  if (process.platform === "win32" && tray.displayBalloon) {
+    try { tray.displayBalloon({ title: "Quartz 仍在后台运行", content: "已收进托盘，速答随时可用。点托盘图标可重新打开，右键可退出。" }); } catch (e) {}
+  }
 }
 
 // Creating/showing the 'panel'-type quick bar demotes the app to an accessory (UIElement) on macOS,
@@ -302,6 +351,11 @@ ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
 // Read the bundled CHANGELOG.md (works inside the asar) so 设置→关于 can show the release history.
 ipcMain.handle("get-changelog", () => { try { return fs.readFileSync(path.join(__dirname, "CHANGELOG.md"), "utf8"); } catch (e) { return ""; } });
+// Launch at login — start hidden so 速答 is available in the background without the window popping up.
+ipcMain.handle("get-login-item", () => { try { loginEnabled = !!app.getLoginItemSettings().openAtLogin; return loginEnabled; } catch (e) { return false; } });
+ipcMain.handle("set-login-item", (_e, enabled) => {
+  try { app.setLoginItemSettings({ openAtLogin: !!enabled, openAsHidden: !!enabled, args: ["--hidden"] }); loginEnabled = !!enabled; return true; } catch (e) { return false; }
+});
 
 // One-time: decrypt API keys that a brief earlier build stored via the OS keychain, so the renderer
 // can convert them back to plaintext. (Key encryption was removed — it popped a keychain prompt on
@@ -647,9 +701,24 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Single instance: if Quartz is already running, don't open a duplicate. After an update the build is
+// ad-hoc signed (a fresh signature), so macOS may treat the old Dock-pinned app as a different app and
+// launch a second copy — this catches that launch, quits it, and focuses the running window instead.
+// (It also stops two processes from writing the same data dir.)
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) app.quit();
+else app.on("second-instance", () => showMain());
+
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;   // a duplicate launch — we're already quitting
   buildMenu();
-  createWindow();
+  // Launched at login? Start with the main window hidden — the renderer still loads and the global
+  // QuickBar shortcut registers (below), so 速答 works in the background before the window is opened.
+  const li = app.getLoginItemSettings();
+  loginEnabled = !!li.openAtLogin;
+  const startHidden = process.argv.includes("--hidden") || li.wasOpenedAsHidden || li.wasOpenedAtLogin;
+  createWindow(startHidden);
+  createTray();          // Windows/Linux tray; the way back to the window after a hidden launch
   createQuickWindow();   // created hidden; first Option+Space is then instant
   ensureForeground();    // (createQuickWindow already re-asserts this; explicit at startup too)
 
@@ -660,13 +729,13 @@ app.whenReady().then(() => {
 
   setupAutoUpdate();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().filter(w => w !== quickWindow).length === 0) createWindow();
-  });
+  app.on("activate", () => { showMain(); });   // dock/taskbar click surfaces the window (incl. when it started hidden)
 });
 
+app.on("before-quit", () => { isQuitting = true; });
 app.on("will-quit", () => { globalShortcut.unregisterAll(); });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // In background mode (tray + 开机自启) keep running with no window — the tray and QuickBar live on.
+  if (process.platform !== "darwin" && !(tray && loginEnabled)) app.quit();
 });

@@ -988,6 +988,7 @@ const ICON_PATHS = {
   command: '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>',
+  fork: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
 };
 function ic(name, size) { size = size || 16; return '<svg class="ic" viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICON_PATHS[name] || "") + '</svg>'; }
 const PIN_SVG = ic("pin", 13);
@@ -1120,6 +1121,16 @@ function renderSidebar() {
     if (groups[b] && groups[b].length) { addHeader(b); groups[b].forEach(c => list.appendChild(buildConvEl(c))); }
   });
   renderArchive();
+}
+// On launch, bring the open conversation ~20% down from the top of the sidebar list — prominent, with a
+// little context above it — instead of leaving it wherever the freshly-rendered list happened to sit.
+function scrollActiveConvIntoView() {
+  const list = document.getElementById("conv-list");
+  if (!list) return;
+  const active = list.querySelector(".conv.active");
+  if (!active) return;
+  const offsetWithinContent = (active.getBoundingClientRect().top - list.getBoundingClientRect().top) + list.scrollTop;
+  list.scrollTop = Math.max(0, offsetWithinContent - list.clientHeight * 0.2);
 }
 
 /* ===================== Archive (recycle bin for deleted conversations) ===================== */
@@ -1513,11 +1524,11 @@ function buildMessage(msg, index) {
     const conv0 = currentConv();
     // a prompt with no answer after it (e.g. its answer was deleted) gets a 重新回答 button, left of 编辑
     if (conv0 && index === conv0.messages.length - 1) actions.append(mk("refresh", "重新回答", "", () => answerFor(index)));
-    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("trash", "删除", "danger", () => deleteMessage(index)));
+    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else if (msg.error) {
     actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
-    actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("trash", "删除", "danger", () => deleteMessage(index)));
+    actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
 
   // answer-version switcher (‹ 1/2 ›) — on any assistant message that has multiple versions. Regenerating
@@ -1816,6 +1827,7 @@ function messageMenuItems(index, msg) {
       { label: "编辑", icon: "edit", onClick: () => { editingIndex = index; renderMessages(); } },
     ];
     if (isLast) items.push({ label: "重新回答", icon: "refresh", onClick: () => answerFor(index) });
+    items.push({ label: "从这里分支", icon: "fork", onClick: () => forkConversation(index) });
     items.push({ sep: true }, { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) });
     return items;
   }
@@ -1835,6 +1847,7 @@ function messageMenuItems(index, msg) {
     { label: "重新回答", icon: "refresh", onClick: () => regenerate(index) },
   ];
   if (models.length) items.push({ label: "用其他模型重答", icon: "cube", sub: models });
+  items.push({ label: "从这里分支", icon: "fork", onClick: () => forkConversation(index) });
   items.push({ sep: true }, { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) });
   return items;
 }
@@ -2046,6 +2059,36 @@ function newConversation() {
   state.currentId = c.id; editingIndex = null;
   save(); renderAll();
   document.getElementById("input").focus();
+}
+
+// Fork: copy the conversation up to and including message `index` into a brand-new conversation (a branch).
+// The original is left untouched; the branch carries the same model / prompt / settings so it continues cleanly.
+function forkConversation(index) {
+  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  const src = currentConv(); if (!src) return;
+  if (index < 0 || index >= src.messages.length) return;
+  const srcId = src.id;
+  // carry the compaction summary only if the branch still includes the whole summarised range
+  const compaction = (src.compaction && (index + 1) >= (src.compaction.count || 0)) ? clone(src.compaction) : null;
+  const c = {
+    id: uid(),
+    title: src.title ? src.title + " · 分支" : "分支",
+    titled: true,
+    model: clone(src.model || nextModel),
+    promptId: src.promptId,
+    webSearch: src.webSearch,
+    reasoning: src.reasoning,
+    reasoningEffort: src.reasoningEffort,
+    compaction: compaction,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    messages: clone(src.messages.slice(0, index + 1)),
+  };
+  state.conversations.unshift(c);
+  state.currentId = c.id;
+  editingIndex = null; autoScroll = true; nodePinned = null;
+  clearConvSearch();
+  save(); renderAll();
+  toast("已分支到新对话", { label: "回到原对话", fn: () => { state.currentId = srcId; editingIndex = null; save(); renderAll(); } });
 }
 
 async function sendMessage() {
@@ -2727,6 +2770,7 @@ function fillSettings() {
   // quick-ask bar
   const q = state.settings.quick;
   setToggle("set-quick-enabled-tog", q.enabled !== false);
+  if (window.chatbox && window.chatbox.getLoginItem) window.chatbox.getLoginItem().then(on => setToggle("set-login-tog", on)).catch(() => {});   // reflect the OS login-item state
   const scBtn = document.getElementById("set-quick-shortcut"); if (scBtn) scBtn.textContent = fmtAccel(q.shortcut || defaultQuick());
   setShortcutHint("quick-shortcut-hint", "", false);
   populateQuickModelSelect();
@@ -2859,6 +2903,7 @@ function setupSettingsLive() {
   document.getElementById("set-topk").addEventListener("change", e => { const v = e.target.value; state.settings.defaults.topK = v === "" ? null : Number(v); save(); });
   // ---- quick-ask bar ----
   bindToggle("set-quick-enabled-tog", on => { state.settings.quick.enabled = on; save(); });
+  bindToggle("set-login-tog", on => { if (window.chatbox && window.chatbox.setLoginItem) window.chatbox.setLoginItem(on); });
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
     const ce = document.getElementById("set-quick-concise");
@@ -3095,7 +3140,7 @@ function msModelRow(pk, m) {
   // prefer a real provider-supplied name; otherwise auto-generate from the id (recommended chips pass name===id)
   const disp = (m.name && m.name !== m.id) ? m.name : prettyModel(m.id, pk);
   const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = disp; main.appendChild(nm);
-  if (disp !== m.id) { const idEl = document.createElement("span"); idEl.className = "or-id"; idEl.textContent = m.id; main.appendChild(idEl); }
+  if (disp !== m.id) main.dataset.tip = m.id;   // show only the short name; reveal the full model id on hover
   row.append(cb, main);
   if (pk === "openrouter") { const meta = document.createElement("span"); meta.className = "or-meta"; meta.innerHTML = orBadges(m); row.appendChild(meta); }
   return row;
@@ -3526,11 +3571,22 @@ document.addEventListener("mouseup", () => { if (resizing) { resizing = false; d
     const text = textFor(el); if (!text) return;
     const t = ensure(); t.textContent = text; t.style.display = "block";
     const r = el.getBoundingClientRect(); const tr = t.getBoundingClientRect();
-    let left = r.left + r.width / 2 - tr.width / 2;
-    left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
-    t.style.left = Math.round(left) + "px";
     const above = r.top - tr.height - 7;
-    t.style.top = Math.round(above >= 6 ? above : r.bottom + 7) + "px";   // above if there's room, else below (header buttons)
+    const top = above >= 6 ? above : r.bottom + 7;   // above if there's room, else below (header buttons)
+    // On Windows/Linux the native min/max/close buttons are a "window-controls overlay" painted
+    // ABOVE all web content — no z-index can sit over them. If a tooltip near the top would slide
+    // under that caption-button strip, pull its right edge clear so it isn't clipped.
+    let rightLimit = window.innerWidth - 8;
+    const wco = navigator.windowControlsOverlay;
+    if (wco && wco.visible) {
+      let capLeft = window.innerWidth - 140, capBottom = 48;   // fallback if the rect API is unavailable
+      try { const bar = wco.getTitlebarAreaRect(); if (bar && bar.width > 0) { capLeft = bar.x + bar.width; capBottom = bar.y + bar.height; } } catch (e) {}
+      if (top < capBottom) rightLimit = Math.min(rightLimit, capLeft - 8);   // tooltip sits in the caption band
+    }
+    let left = r.left + r.width / 2 - tr.width / 2;
+    left = Math.max(8, Math.min(left, rightLimit - tr.width));
+    t.style.left = Math.round(left) + "px";
+    t.style.top = Math.round(top) + "px";
   }
   function hide() { if (tipEl) tipEl.style.display = "none"; if (tipFor) restore(tipFor); tipFor = null; }
   document.addEventListener("mouseover", (e) => {
@@ -3724,6 +3780,7 @@ function applySeed(seed) {
   applyCodeTheme();
   applyProxy();          // route API traffic through the saved proxy before any request fires
   renderAll();
+  requestAnimationFrame(scrollActiveConvIntoView);   // land the restored conversation ~20% down the sidebar
   applyDensity();
   updateComposerHint();
   pushQuickConfig();   // hand the quick-ask bar its initial config as soon as we're up
