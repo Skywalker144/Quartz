@@ -198,6 +198,13 @@
               </div>
             </div>
             <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">强调色</div><div class="set-row-d">每条 AI 回答开头水晶的颜色（之后会逐步用到更多地方）。悬停色块可预览。</div></div>
+              <div class="set-row-c">
+                <span class="accent-crystal qz-gem" id="accent-preview" aria-hidden="true"></span>
+                <div class="swatch-row" id="set-accent-sw"></div>
+              </div>
+            </div>
+            <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">字体</div></div>
               <div class="set-row-c">
                 <select id="set-font">
@@ -431,6 +438,8 @@
               <div class="about-ver" id="about-version">v0.1.0</div>
               <div class="about-update">
                 <button class="btn small" id="about-check-update" type="button">检查更新</button>
+                <button class="btn small primary" id="about-restart-update" type="button" hidden>重启更新</button>
+                <button class="btn small" id="about-open-guide" type="button">使用指南</button>
                 <span class="about-update-status" id="about-update-status"></span>
               </div>
               <p class="about-desc">一个简洁、快速的桌面 AI 对话工具，专注顺手的多轮对话与隐私自主。</p>
@@ -442,6 +451,10 @@
                 <li><span class="af-k">数据自主</span><span class="af-v">全部对话本地存储，支持 Markdown 导出与一键备份恢复</span></li>
               </ul>
               <div class="about-meta" id="about-meta"></div>
+              <div class="about-changelog">
+                <div class="about-cl-head">更新日志</div>
+                <div class="about-cl-body md" id="about-changelog"></div>
+              </div>
             </div>
           </section>
         </div>

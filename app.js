@@ -166,7 +166,7 @@ function freshState() {
   return {
     settings: {
       providers: { openrouter: { key: "" }, openai: { key: "" }, anthropic: { key: "" }, deepseek: { key: "" }, google: { key: "" } },
-      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid" },
+      appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid", accent: "amethyst", accentCustom: "#bd9cff" },
       models: [],   // empty on a fresh install — the user adds their own; the first one added becomes the default
       prompts: [{ id: "daily-default", name: "日常", text: DAILY_PROMPT }, { id: "expert-default", name: "深度", text: EXPERT_PROMPT }],
       defaults: {
@@ -178,6 +178,7 @@ function freshState() {
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
       tempBumped: true,
+      guideSeen: false,
     },
     conversations: [],
     archived: [],
@@ -643,8 +644,9 @@ function setupMarked() {
   marked.use({ extensions: [blockMath, inlineMath] });
 }
 
-// Streaming loader: the Quartz crystal with a highlight rotating around its nine facets (matches the icon).
-const QZ_CRYSTAL = '<svg class="qz-crystal" viewBox="0 0 24 24" aria-hidden="true">'
+// The faceted quartz gem (nine facets: qc-center + qc p1..p8), shared by the answer crest and the settings
+// preview via the .qz-gem class. Coloured by --crystal; a graded gem at rest, facet highlight travels when .live.
+const CRYSTAL_FACETS = '<svg viewBox="0 0 24 24">'
   + '<polygon class="qc-center" points="10.2,8.5 13.8,8.5 13.8,15.5 10.2,15.5"/>'
   + '<polygon class="qc p1" points="12,3 10.2,8.5 13.8,8.5"/>'
   + '<polygon class="qc p2" points="12,3 13.8,8.5 17,8.5"/>'
@@ -654,13 +656,28 @@ const QZ_CRYSTAL = '<svg class="qz-crystal" viewBox="0 0 24 24" aria-hidden="tru
   + '<polygon class="qc p6" points="12,21 7,15.5 10.2,15.5"/>'
   + '<polygon class="qc p7" points="7,8.5 10.2,8.5 10.2,15.5 7,15.5"/>'
   + '<polygon class="qc p8" points="12,3 7,8.5 10.2,8.5"/></svg>';
-function appendStreamLoader(el) {
-  if (!el) return;
-  const last = el.lastElementChild;                                  // trail the last line inline (like a caret);
-  const t = (last && /^(P|LI|H[1-6])$/.test(last.tagName)) ? last : el;   // for code/lists fall back to the block
-  t.insertAdjacentHTML("beforeend", '<span class="qz-load">' + QZ_CRYSTAL + '</span>');
+// Crystal that leads each AI answer — sits in the left gutter, centred on the first line; the text keeps its
+// normal full-width position. While the answer streams (.live) the highlight travels around the facets.
+const ANS_CREST = '<span class="ans-crest qz-gem" aria-hidden="true">' + CRYSTAL_FACETS + '</span>';
+// Render an assistant answer's markdown while PRESERVING the leading crystal node across re-renders.
+// Recreating the crystal on every streamed token would restart its CSS animation, so the facet highlight
+// would never travel — it'd freeze on whichever facets are lit in the animation's first frame. Instead we
+// keep the same .ans-crest element and only swap the markdown that follows it.
+function renderAnswer(contentEl, html, live) {
+  if (!contentEl) return;
+  let crest = contentEl.querySelector(":scope > .ans-crest");
+  if (crest) {
+    while (crest.previousSibling) crest.previousSibling.remove();   // keep crest first
+    while (crest.nextSibling) crest.nextSibling.remove();           // drop the old markdown, keep crest
+    if (html) crest.insertAdjacentHTML("afterend", html);
+  } else {
+    contentEl.innerHTML = html || "";
+    contentEl.insertAdjacentHTML("afterbegin", ANS_CREST);
+    crest = contentEl.querySelector(":scope > .ans-crest");
+  }
+  if (crest) crest.classList.toggle("live", !!live);               // facet highlight travels while generating
 }
-function removeStreamLoader(el) { const l = el && el.querySelector(".qz-load"); if (l) l.remove(); }
+function stopCrest(contentEl) { const c = contentEl && contentEl.querySelector(":scope > .ans-crest"); if (c) c.classList.remove("live"); }
 
 // CommonMark emphasis won't fire when a ** / * delimiter sits flush against CJK punctuation with a CJK
 // letter on the other side (Chinese uses no spaces), so "**加粗（注）**的" renders literally. Slip a
@@ -740,7 +757,73 @@ function applyTheme() {
   const t = state.settings.appearance.theme;
   const resolved = t === "auto" ? (mql.matches ? "dark" : "light") : t;
   document.documentElement.setAttribute("data-theme", resolved);
+  applyAccent();              // crystal colour is per-theme — refresh it for the resolved light/dark
   syncTitleBarOverlay();
+}
+// Accent colour — a single restrained hue the user picks. For now it drives the brand crystal (--crystal);
+// other focal points can opt in later. Each option is a real quartz variety; lighter on dark backgrounds,
+// deeper on light, so the faceted gem reads well either way.
+const ACCENT_COLORS = {
+  amethyst: { name: "紫水晶", light: "#7a4fd6", dark: "#bd9cff" },
+  sapphire: { name: "蓝晶",   light: "#2f73d4", dark: "#74b6ff" },
+  rose:     { name: "粉晶",   light: "#db4f80", dark: "#ff9fc2" },
+  citrine:  { name: "黄水晶", light: "#cf911a", dark: "#f6cb45" },
+  smoky:    { name: "茶晶",   light: "#b3743e", dark: "#e3a86f" },
+  emerald:  { name: "绿晶",   light: "#1ba36a", dark: "#56d79b" },
+  clear:    { name: "白水晶", light: "#9a9a9a", dark: "#d6d6d6" },
+};
+function accentHex() {
+  const a = state.settings.appearance;
+  if (a.accent === "custom") return a.accentCustom || "#a99cd6";   // user-picked, same hue in both themes
+  const c = ACCENT_COLORS[a.accent] || ACCENT_COLORS.amethyst;
+  const theme = document.documentElement.getAttribute("data-theme") || "dark";
+  return theme === "light" ? c.light : c.dark;
+}
+function applyAccent() {
+  if (!state) return;
+  document.documentElement.style.setProperty("--crystal", accentHex());
+  const sw = document.getElementById("set-accent-sw");
+  if (sw) renderAccentSwatches();   // keep the settings swatches in sync when the theme flips
+}
+// Render the colour swatches in Settings → 外观 → 强调色. Each shows the hue as it'll look in the current theme.
+function renderAccentSwatches() {
+  const wrap = document.getElementById("set-accent-sw");
+  if (!wrap || !state) return;
+  const preview = document.getElementById("accent-preview");
+  if (preview && !preview.firstChild) preview.innerHTML = CRYSTAL_FACETS;   // the showcase gem (coloured by --crystal)
+  const cur = state.settings.appearance.accent || "amethyst";
+  const theme = document.documentElement.getAttribute("data-theme") || "dark";
+  wrap.innerHTML = "";
+  Object.keys(ACCENT_COLORS).forEach(key => {
+    const c = ACCENT_COLORS[key];
+    const hex = theme === "light" ? c.light : c.dark;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch" + (key === cur ? " on" : "");
+    b.title = c.name;
+    b.style.background = hex;
+    b.onmouseenter = () => { if (preview) preview.style.setProperty("--crystal", hex); };   // hover to preview
+    b.onclick = () => { if (preview) preview.style.removeProperty("--crystal"); state.settings.appearance.accent = key; applyAccent(); save(); };
+    wrap.appendChild(b);
+  });
+  // custom colour — a rainbow swatch wrapping a hidden native colour picker
+  const a = state.settings.appearance;
+  const custom = a.accentCustom || "#a99cd6";
+  const cl = document.createElement("label");
+  cl.className = "swatch custom" + (cur === "custom" ? " on" : "");
+  cl.title = "自定义颜色";
+  const ci = document.createElement("input");
+  ci.type = "color"; ci.value = custom;
+  ci.oninput = () => {   // live preview everywhere while dragging in the picker (saved on change)
+    if (preview) preview.style.removeProperty("--crystal");
+    a.accent = "custom"; a.accentCustom = ci.value;
+    document.documentElement.style.setProperty("--crystal", ci.value);
+  };
+  ci.onchange = () => { a.accent = "custom"; a.accentCustom = ci.value; applyAccent(); save(); };
+  cl.appendChild(ci);
+  cl.onmouseenter = () => { if (preview) preview.style.setProperty("--crystal", a.accentCustom || "#a99cd6"); };
+  wrap.appendChild(cl);
+  if (preview) wrap.onmouseleave = () => preview.style.removeProperty("--crystal");   // revert to the selected colour
 }
 // multiply a #rrggbb colour toward black by factor f (0..1) — used to dim the native controls under a modal scrim
 function dimHex(hex, f) {
@@ -749,7 +832,7 @@ function dimHex(hex, f) {
   const r = Math.round(((n >> 16) & 255) * f), g = Math.round(((n >> 8) & 255) * f), b = Math.round((n & 255) * f);
   return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
 }
-function anyModalOpen() { return ["modal-bg", "confirm-bg"].some(id => { const e = document.getElementById(id); return e && e.classList.contains("show"); }); }
+function anyModalOpen() { return ["modal-bg", "confirm-bg", "guide-bg"].some(id => { const e = document.getElementById(id); return e && e.classList.contains("show"); }); }
 // Keep the Windows/Linux native window-controls overlay matching the current theme colours. While a modal is open
 // the page sits under a 50% black scrim, but Windows draws the controls ABOVE the web layer so they stay bright and
 // "pop" — dim them to match so the whole window greys out together.
@@ -1414,7 +1497,8 @@ function buildMessage(msg, index) {
     wrap.append(head, body, retry);
     contentEl.appendChild(wrap);
   }
-  else contentEl.innerHTML = msg.content ? renderMarkdown(msg.content) : '<span class="dim">…</span>';
+  else if (msg.content) { renderAnswer(contentEl, renderMarkdown(msg.content), false); }
+  else contentEl.innerHTML = '<span class="dim">…</span>';
 
   if (!isUser && msg.reasoning) {
     inner.querySelector(".reasoning").style.display = "block";
@@ -1436,9 +1520,9 @@ function buildMessage(msg, index) {
     actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
 
-  // answer-version switcher (‹ 1/2 ›) — only on the LAST assistant message, to keep the transcript consistent
-  const _conv = currentConv();
-  if (!isUser && Array.isArray(msg.variants) && msg.variants.length > 1 && _conv && index === _conv.messages.length - 1) {
+  // answer-version switcher (‹ 1/2 ›) — on any assistant message that has multiple versions. Regenerating
+  // an earlier answer now keeps the following turns in place, so its old versions stay reachable here.
+  if (!isUser && Array.isArray(msg.variants) && msg.variants.length > 1) {
     const vi = (typeof msg.vi === "number") ? msg.vi : msg.variants.length - 1;
     const sw = document.createElement("div"); sw.className = "variant-switch";
     const prev = document.createElement("button"); prev.className = "vs-btn"; prev.textContent = "‹"; prev.title = "上一个回答"; prev.disabled = vi <= 0;
@@ -1607,8 +1691,7 @@ async function processNodeTitleQueue() {
       const tref = state.settings.defaults.title;
       if (!keyOf(tref)) break;
       nodeTitleTried.add(job.convId + ":" + job.userIndex);
-      // Feed the conversation's earlier node titles as context so a follow-up ("继续" / "再展开第二点")
-      // gets a meaningful, non-duplicate label instead of a vague one. A standalone first question has none.
+      // Earlier node titles → context, so a follow-up ("继续" / "再展开") gets a meaningful, non-duplicate label.
       const priorTitles = conv.messages.slice(0, job.userIndex)
         .filter(x => x.role === "user" && x.nodeTitle).map(x => x.nodeTitle).slice(-8);
       let sys = "你是侧栏导航小标题生成器。根据给到的用户消息，提炼其主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
@@ -1619,7 +1702,7 @@ async function processNodeTitleQueue() {
       }
       try {
         const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: userContent }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
-        let t = ((r.text || "").trim().split("\n").filter(s => s.trim()).pop() || "").replace(/^["'“”『「]+|["'“”』」.。!！?？]+$/g, "").slice(0, 30);
+        const t = cleanTitle(r.text);
         if (t) { m.nodeTitle = t; save(); const cur = currentConv(); if (cur && cur.id === job.convId) renderNodemap(); }
       } catch (e) { /* leave as snippet; retry next session */ }
     }
@@ -1647,15 +1730,19 @@ function answerFor(index) {
   editingIndex = null; save(); renderMessages();
   runCompletion(conv);
 }
+// Regenerate the answer at `index` IN PLACE — the turns after it stay exactly where they are (regenerating
+// an earlier reply no longer wipes the rest of the conversation). The previous answer is kept as a
+// switchable version (‹ 1/2 ›).
 function regenerate(index) {
   if (abortController) return;
   const conv = currentConv(); if (!conv) return;
   const old = conv.messages[index];
-  const carry = (old && Array.isArray(old.variants) && old.variants.length) ? old.variants.slice()
-              : (old && old.role === "assistant" ? [snapshotVariant(conv, index)] : []);
-  conv.messages = conv.messages.slice(0, index);
-  editingIndex = null; save(); renderMessages();
-  runCompletion(conv, { carryVariants: carry });
+  if (!old || old.role !== "assistant") return;
+  const carry = old.error ? []
+              : (Array.isArray(old.variants) && old.variants.length) ? old.variants.slice()
+              : [snapshotVariant(conv, index)];
+  editingIndex = null;
+  runCompletion(conv, { carryVariants: carry, regenAt: index });
 }
 function copyMessage(index, e) {
   const conv = currentConv(); if (!conv) return;
@@ -1978,7 +2065,7 @@ async function sendMessage() {
   if (!conv.titled && conv.messages.filter(m => m.role === "user").length === 1)
     conv.title = (text || (atts[0] && atts[0].name) || "新对话").slice(0, 30);
   input.value = ""; autoGrow(); pending = []; renderPending();
-  maybeTitle(conv);                              // name the conversation from the prompt right away
+  maybeTitle(conv);                              // name / update the conversation title (node titles come from the node-map render)
   await runCompletion(conv, { restorable: true });
 }
 
@@ -1987,35 +2074,50 @@ async function runCompletion(conv, opts) {
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
   conv.model = clone(ref);
-  conv.messages.push({ role: "assistant", content: "" });
+  // Regenerate in place (keep the following turns) when given a target index; otherwise append a new turn.
+  const at = (opts && typeof opts.regenAt === "number" && conv.messages[opts.regenAt] && conv.messages[opts.regenAt].role === "assistant") ? opts.regenAt : null;
+  let targetIndex;
+  if (at != null) {
+    const tg = conv.messages[at];
+    tg.content = ""; tg.reasoning = ""; delete tg.usage; delete tg.error;
+    targetIndex = at;
+  } else {
+    conv.messages.push({ role: "assistant", content: "" });
+    targetIndex = conv.messages.length - 1;
+  }
   // A fresh user send is "restorable": Esc returns the prompt to the input box (not regenerate).
-  const um = conv.messages[conv.messages.length - 2];
+  const um = conv.messages[targetIndex - 1];
   restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
     ? { text: um.content || "", attachments: Array.isArray(um.attachments) ? um.attachments.slice() : [] } : null;
   pinTop = null; autoScroll = false; nodePinned = null;   // the pin (below) drives the streaming scroll
   save(); renderMessages(); renderSidebar();
 
   const box = document.getElementById("messages");
-  const row = box.lastElementChild;
+  const row = (at != null) ? box.querySelector('.msg-row[data-index="' + targetIndex + '"]') : box.lastElementChild;
+  if (!row) { setSending(false); return; }
   const contentEl = row.querySelector(".msg-body > .msg-content");
   const reasoningWrap = row.querySelector(".reasoning");
   const reasoningBody = row.querySelector(".reasoning-body");
-  contentEl.innerHTML = ""; appendStreamLoader(contentEl);
+  renderAnswer(contentEl, "", true);
 
   // Auto-scroll the streaming reply, but STOP once the user's prompt reaches ~20% from the top (it stays
   // visible with the answer filling in below it). Start at the bottom — no jarring jump — and let
   // applyAutoScroll ease toward min(pinTop, maxScroll): follows the bottom until the prompt hits 20%, then holds.
-  let ur = row ? row.previousElementSibling : null;
-  while (ur && !ur.classList.contains("msg-row")) ur = ur.previousElementSibling;
-  pinTop = ur ? Math.max(0, ur.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
   box.classList.add("streaming");
-  box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop;
+  if (at == null) {
+    let ur = row ? row.previousElementSibling : null;
+    while (ur && !ur.classList.contains("msg-row")) ur = ur.previousElementSibling;
+    pinTop = ur ? Math.max(0, ur.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
+    box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop;
+  } else {
+    pinTop = null;   // in-place regenerate: stream where the answer already sits, don't move the viewport
+  }
 
   setSending(true); abortController = new AbortController();
   if (conv.webSearch && ref.provider !== "openrouter") toast("联网搜索目前仅 OpenRouter 模型支持，本次未联网");
 
   const d = state.settings.defaults;
-  let history = conv.messages.slice(0, -1).map(m => ({ role: m.role, content: m.content, attachments: m.attachments, reasoning: m.reasoning }));
+  let history = conv.messages.slice(0, at != null ? at : -1).map(m => ({ role: m.role, content: m.content, attachments: m.attachments, reasoning: m.reasoning }));
   let system = activePromptText(conv);
   if (conv.compaction && conv.compaction.summary) {
     const cut = Math.min(conv.compaction.count, history.length);
@@ -2040,7 +2142,7 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (userSelecting()) return; contentEl.innerHTML = renderMarkdown(t); appendStreamLoader(contentEl); enhanceCode(box); applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (userSelecting()) return; renderAnswer(contentEl, renderMarkdown(t), true); enhanceCode(box); applyAutoScroll(box); },
       onReasoning: (rt) => { racc = rt; if (userSelecting()) return; if (reasoningWrap) reasoningWrap.style.display = "block"; if (reasoningBody) reasoningBody.innerHTML = renderMarkdown(rt); applyAutoScroll(box); },
     });
     acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
@@ -2049,7 +2151,7 @@ async function runCompletion(conv, opts) {
     else errInfo = friendlyError(err);
   }
 
-  removeStreamLoader(contentEl);
+  stopCrest(contentEl);
   box.classList.remove("streaming");
   cancelSmooth();
   setSending(false); abortController = null;
@@ -2068,12 +2170,12 @@ async function runCompletion(conv, opts) {
   }
   restoreOnAbort = null;
 
-  const last = conv.messages[conv.messages.length - 1];
+  const last = conv.messages[targetIndex];
   last.content = acc; if (racc) last.reasoning = racc; if (usage) last.usage = usage;
   if (errInfo) last.error = errInfo; else delete last.error;   // structured error → inline error block + 重试
   // if this turn was a regenerate / edit-resend, keep the previous answer(s) as switchable variants
   if (!errInfo && opts && Array.isArray(opts.carryVariants) && opts.carryVariants.length) {
-    let ui = conv.messages.length - 2; while (ui >= 0 && conv.messages[ui].role !== "user") ui--;
+    let ui = targetIndex - 1; while (ui >= 0 && conv.messages[ui].role !== "user") ui--;
     const u = ui >= 0 ? conv.messages[ui] : null;
     last.variants = opts.carryVariants.concat([{
       content: acc, reasoning: racc || "", usage: usage || null,
@@ -2116,38 +2218,42 @@ function cleanTitle(s) {
   return ((s || "").trim().split("\n").filter(x => x.trim()).pop() || "")
     .replace(/^["'“”『「]+|["'“”』」.。!！?？]+$/g, "").slice(0, 40);
 }
+// Conversation title — its own focused call (separate from node titles, for reliability). On the first
+// message it names from that message; afterwards each turn it re-checks whether the title still fits the
+// whole thread and updates if not. Judged from the user's questions only (never the answers); a manually
+// edited title is left untouched.
 async function maybeTitle(conv) {
   const tref = state.settings.defaults.title;
-  if (!tref || !keyOf(tref)) return; // no naming model configured — keep the snippet title
+  if (!tref || !keyOf(tref)) return;
   const prompts = conv.messages.filter(m => m.role === "user" && ((m.content || "").trim() || (m.attachments || []).length));
   if (!prompts.length) return;
 
   if (!conv.titled) {
-    // First title — from the user's first message alone (immediate, no answer tokens).
     const sys = "你是对话标题生成器。根据给到的用户消息，提炼其主题，输出一个简短标题：不超过 6 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。例如消息为「用比喻解释相对论」时应输出「相对论 通俗解释」，而不是某个比喻。只输出标题本身。";
     conv.titled = true; save();
     try {
       const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: plainText(prompts[0]).slice(0, 800) }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
       const t = cleanTitle(r.text);
       if (t) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
-      else toast("自动标题失败：模型只输出了思考、没给出标题。建议把「话题命名模型」设为不推理的 deepseek-chat。");
-    } catch (e) { toast("自动标题失败：" + e.message + "（点标题旁的 ↻ 可重试）"); }
+    } catch (e) {}
     return;
   }
 
-  // Already titled — each new turn, let the model decide whether the title still fits the whole thread.
-  // Judged from the user's questions only (never the answers). A manually edited title is left alone.
   if (conv.titleManual || prompts.length < 2) return;
   const list = prompts.map((m, i) => (i + 1) + ". " + plainText(m).replace(/\s+/g, " ").slice(0, 140)).join("\n").slice(0, 1600);
-  const sys = "你是对话标题维护器。会给你一个对话的【当前标题】和用户【依次提出的问题】。判断当前标题是否仍能概括整个对话：若仍然贴切，只输出 KEEP（四个大写字母，不要任何别的内容）；若对话已展开或转向、当前标题已概括不了，则输出一个更贴切的新标题——不超过 6 个词、名词短语、用对话所用的语言、只输出标题本身，禁止解释、标点、引号。";
+  const sys = "你是对话标题维护器。给你这个对话的【当前标题】和用户【依次提出的问题】，判断标题要不要更新：\n"
+    + "- 忽略「你好 / 在吗 / 谢谢」这类开场或客套，标题要反映对话真正的主题；\n"
+    + "- 若当前标题只覆盖了开头、或对话主题已经转移 / 变得更具体，就给出更贴切的新标题（不超过 6 个词、名词短语、用对话所用的语言）；\n"
+    + "- 只有当前标题确实已经能很好地概括整段对话，才原样输出 KEEP（四个大写字母）。\n"
+    + "只输出新标题或 KEEP，禁止解释、标点、引号。";
   const usr = "【当前标题】" + conv.title + "\n\n【用户依次提出的问题】\n" + list;
   try {
     const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: usr }] }, { temp: 0.2, maxTokens: 256, reasoning: false });
     const lastLine = (r.text || "").trim().split("\n").filter(x => x.trim()).pop() || "";
-    if (/^\s*keep\b/i.test(lastLine)) return;       // model is satisfied with the current title
+    if (/^\s*keep\b/i.test(lastLine)) return;          // current title still fits
     const t = cleanTitle(r.text);
     if (t && t !== conv.title && !/keep/i.test(t)) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
-  } catch (e) { /* silent — background refinement, no toast */ }
+  } catch (e) { /* silent background refinement */ }
 }
 
 async function compactContext() {
@@ -2431,11 +2537,12 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); switchSection(section || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
-function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); }
+function openSettings(section) { fillSettings(); switchSection(section || (state && state.settings.lastSection) || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
+function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); maybeShowGuide(); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
   document.querySelectorAll("#modal-sections section").forEach(s => s.classList.toggle("hidden", s.dataset.sec !== sec));
+  if (state && state.settings.lastSection !== sec) { state.settings.lastSection = sec; save(); }   // reopen on this page next time
   if (sec === "services") renderServices();
   if (sec === "prompts") refreshPromptsSection();
   if (sec === "defaults") {
@@ -2576,6 +2683,18 @@ async function fillAbout() {
     const v = document.getElementById("about-version"); if (v) v.textContent = "v" + info.version;
     const m = document.getElementById("about-meta"); if (m) m.textContent = "Electron " + info.electron + " · Chromium " + info.chrome;
   } catch (e) {}
+  // Render the bundled CHANGELOG.md (release history) into 关于 — fetched once per session.
+  try {
+    const el = document.getElementById("about-changelog");
+    if (el && !el._loaded && window.chatbox && window.chatbox.getChangelog) {
+      const md = await window.chatbox.getChangelog();
+      if (md) {
+        const i = md.indexOf("## ");                       // drop the H1 title + intro line
+        el.innerHTML = renderMarkdown(i >= 0 ? md.slice(i) : md);
+        el._loaded = true;
+      }
+    }
+  } catch (e) {}
 }
 // The editable concise-prompt box is only relevant in the "简洁速答" mode.
 function toggleConciseField() {
@@ -2589,6 +2708,7 @@ function fillSettings() {
   PROVIDER_ORDER.forEach(pk => { const st = document.getElementById("keystat-" + pk); if (st) { st.textContent = ""; st.className = "key-test-status"; } });
   const a = state.settings.appearance;
   setSeg("set-theme-seg", a.theme || "auto");
+  renderAccentSwatches();
   document.getElementById("set-font").value = a.fontFamily;
   document.getElementById("set-fontsize").value = a.fontSize;
   document.getElementById("fontsize-val").textContent = a.fontSize + "px";
@@ -3094,6 +3214,83 @@ function autoGrow() { const ta = document.getElementById("input"); ta.style.heig
 function autoGrowEl(el, max) { if (!el) return; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, max || 460) + "px"; }
 function focusInput() { const el = document.getElementById("input"); if (el) el.focus(); }
 
+/* ---- First-run usage guide — a small paginated carousel (left: text, right: illustration) ---- */
+// Right-side art is a real screenshot of each feature, in two themes: assets/guide/<name>-<light|dark>.png
+let _guideIdx = 0;
+function guideSlides() {
+  const cl = IS_MAC ? "⌘L" : "Ctrl+L", cn = IS_MAC ? "⌘N" : "Ctrl+N";
+  const q = fmtAccel(state.settings.quick.shortcut || defaultQuick());
+  const om = fmtAccel(state.settings.quick.openMainShortcut || defaultOpenMain());
+  const kb = (s) => "<kbd>" + s + "</kbd>";
+  return [
+    { t: "速答浮条", d: "在任意 App 里按 " + kb(q) + " 唤起一个浮条，随手提问、即时得到回答；满意就回车，一键接力到 Quartz 继续多轮。", img: "quick" },
+    { t: "系统提示词", d: "输入框左下角的「提示词」可一键切换不同风格的人设；在 设置 → 系统提示词 里编辑或新增你自己的。", img: "prompt" },
+    { t: "思考强度", d: "输入框右下角的灯泡，点按在 关 / 低 / 中 / 高 之间切换——需要深思时让模型多想，日常问答则更快更省。", img: "think" },
+    { t: "节点小地图", d: "长对话左侧的竖条是一张迷你导航图，点任意节点即可跳到那一轮；每个节点的小标题由 AI 自动生成。", img: "nodes" },
+    { t: "顺手快捷键", d: kb(cl) + " 回到输入框 · " + kb(cn) + " 新对话 · 输入 " + kb("/") + " 唤出命令面板 · 全局 " + kb(om) + " 把 Quartz 唤到最前。", img: "keys" },
+    { t: "多模型 · 联网", d: "点底部模型名随时切换；同一个问题可用不同模型重答对比。用 OpenRouter 模型时还能点地球开启实时联网检索。", img: "models" },
+  ];
+}
+function _guideKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeGuide(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); guideGo(_guideIdx + 1); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); guideGo(_guideIdx - 1); }
+}
+function guideGo(i) {
+  const n = guideSlides().length;
+  _guideIdx = Math.max(0, Math.min(n - 1, i));
+  renderGuide();
+}
+function renderGuide() {
+  const bg = document.getElementById("guide-bg"); if (!bg) return;
+  const slides = guideSlides(), s = slides[_guideIdx];
+  bg.querySelector(".guide-left h3").textContent = s.t;
+  bg.querySelector(".guide-left p").innerHTML = s.d;
+  const th = (document.documentElement.getAttribute("data-theme") === "dark") ? "dark" : "light";
+  bg.querySelector(".guide-art").innerHTML = '<img alt="" src="assets/guide/' + s.img + "-" + th + '.png">';
+  bg.querySelectorAll(".guide-dot").forEach((d, i) => d.classList.toggle("active", i === _guideIdx));
+  bg.querySelector(".guide-btn.prev").disabled = _guideIdx === 0;
+  bg.querySelector(".guide-btn.next").textContent = (_guideIdx === slides.length - 1) ? "开始使用" : "下一步";
+}
+function openGuide() {
+  let bg = document.getElementById("guide-bg");
+  if (!bg) {
+    bg = document.createElement("div"); bg.id = "guide-bg"; bg.className = "guide-bg";
+    bg.addEventListener("mousedown", (e) => { if (e.target === bg) closeGuide(); });
+    document.body.appendChild(bg);
+  }
+  _guideIdx = 0;
+  const dots = guideSlides().map((_, i) => '<span class="guide-dot" data-i="' + i + '"></span>').join("");
+  bg.innerHTML = '<div class="guide-modal" role="dialog" aria-label="使用指南">'
+    + '<div class="guide-head"><h2>快速上手</h2><button class="guide-x" type="button" aria-label="关闭">✕</button></div>'
+    + '<div class="guide-body"><div class="guide-left"><h3></h3><p></p></div><div class="guide-art"></div></div>'
+    + '<div class="guide-foot"><div class="guide-dots">' + dots + '</div>'
+    + '<div class="guide-nav"><button class="guide-btn prev" type="button">上一步</button><button class="guide-btn next" type="button">下一步</button></div>'
+    + '</div></div>';
+  bg.querySelector(".guide-x").onclick = closeGuide;
+  bg.querySelector(".guide-btn.prev").onclick = () => guideGo(_guideIdx - 1);
+  bg.querySelector(".guide-btn.next").onclick = () => { if (_guideIdx >= guideSlides().length - 1) closeGuide(); else guideGo(_guideIdx + 1); };
+  bg.querySelectorAll(".guide-dot").forEach(d => d.onclick = () => guideGo(+d.dataset.i));
+  renderGuide();
+  bg.classList.add("show");
+  document.addEventListener("keydown", _guideKey, true);
+  if (typeof syncTitleBarOverlay === "function") syncTitleBarOverlay();
+}
+function closeGuide() {
+  const bg = document.getElementById("guide-bg"); if (bg) bg.classList.remove("show");
+  document.removeEventListener("keydown", _guideKey, true);
+  const firstRun = state && !state.settings.guideSeen;   // auto-shown on first launch (not re-opened from 关于)
+  if (firstRun) { state.settings.guideSeen = true; save(); }
+  if (typeof syncTitleBarOverlay === "function") syncTitleBarOverlay();
+  if (firstRun && !anyKey()) openSettings("services");   // first run finished → now guide them to add an API key
+}
+// Show once, on first launch, before anything else. Won't stack on an already-open Settings/dialog.
+function maybeShowGuide() {
+  if (!state || state.settings.guideSeen) return;
+  if (anyModalOpen()) return;     // don't stack on Settings / a dialog
+  openGuide();
+}
+
 /* First-run / idle hints (gray helper text) */
 const IS_MAC = /mac/i.test(navigator.platform) || /Mac/.test(navigator.userAgent);
 const MOD = IS_MAC ? "⌘" : "Ctrl";
@@ -3384,7 +3581,7 @@ function handleQuickOpen(p) {
     state.conversations.unshift(conv);
     state.currentId = conv.id; editingIndex = null;
     save(); renderAll();
-    maybeTitle(conv);          // auto-name from the question, same as a normal send
+    maybeTitle(conv);          // name the conversation, same as a normal send
     focusInput();
   } else {
     newConversation();
@@ -3431,16 +3628,24 @@ function renderUpdatePill(s) {
   updateAboutUpdateStatus(s);
 }
 function updateAboutUpdateStatus(s) {
-  const el = document.getElementById("about-update-status"); if (!el) return;
+  const el = document.getElementById("about-update-status");
+  const btn = document.getElementById("about-restart-update");
+  if (!el) return;
   const st = s && s.state, v = (s && s.version) ? (" " + s.version) : "";
   el.textContent =
     st === "checking" ? "正在检查…" :
     st === "downloading" ? ("正在下载" + v + (s.percent != null ? " · " + s.percent + "%" : "…")) :
-    st === "ready" ? ("已下载" + v + "，点左下角的更新提示即可重启更新") :
+    st === "ready" ? ("已下载" + v + "，重启即可更新") :
+    st === "available" ? ("发现新版本" + v) :
     st === "error" ? "检查或下载失败，请稍后重试" :
     (st === "none" && s.ignored) ? "已忽略此版本" :
     st === "none" ? "已是最新版本" :
     st === "dev" ? "开发模式不检查更新" : "";
+  if (btn) {                                  // download done (or available) → offer to restart & apply
+    const ready = (st === "ready" || st === "available");
+    btn.hidden = !ready;
+    btn.textContent = (st === "available") ? "立即更新" : "重启更新";
+  }
 }
 if (window.chatbox && window.chatbox.onUpdateStatus) window.chatbox.onUpdateStatus(renderUpdatePill);
 // Check for updates from the About page — used by both the manual button and the auto-check on open.
@@ -3455,6 +3660,10 @@ async function aboutCheckUpdate() {
 }
 { const cu = document.getElementById("about-check-update");
   if (cu) cu.onclick = aboutCheckUpdate;
+  const og = document.getElementById("about-open-guide");
+  if (og) og.onclick = openGuide;
+  const ru = document.getElementById("about-restart-update");
+  if (ru) ru.onclick = () => { if (window.chatbox && window.chatbox.updateAction) window.chatbox.updateAction("install"); };
 }
 
 // Auto-backup (data safety): a silent, rotating local snapshot WITHOUT API keys. Skipped when nothing
@@ -3520,7 +3729,10 @@ function applySeed(seed) {
   pushQuickConfig();   // hand the quick-ask bar its initial config as soon as we're up
   try { if (window.chatbox && window.chatbox.getUpdateStatus) renderUpdatePill(await window.chatbox.getUpdateStatus()); } catch (e) {}
   if (_pendingQuick) { const q = _pendingQuick; _pendingQuick = null; handleQuickOpen(q); }
-  if (!anyKey()) setTimeout(() => openSettings("services"), 300);
+  // First run: usage guide first — closeGuide() then opens Settings for the API key.
+  // Returning users who still have no key go straight to Settings.
+  if (!state.settings.guideSeen) setTimeout(maybeShowGuide, 500);
+  else if (!anyKey()) setTimeout(() => openSettings("services"), 300);
 })();
 // Best-effort flush of any pending debounced save before the window goes away.
 window.addEventListener("pagehide", () => { if (_saveDirty) flushSave(); });

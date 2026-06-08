@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("chatbox", {
   openBackups: () => ipcRenderer.invoke("open-backups"),
   getSeedConfig: () => ipcRenderer.invoke("seed-config"),
   getAppInfo: () => ipcRenderer.invoke("app-info"),
+  getChangelog: () => ipcRenderer.invoke("get-changelog"),
   onUpdateStatus: (cb) => ipcRenderer.on("update-status", (_e, s) => cb(s)),
   getUpdateStatus: () => ipcRenderer.invoke("update-status-get"),
   updateAction: (action) => ipcRenderer.send("update-action", action),

@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .env
 build/icon.iconset/
+.accent-preview/
+ACCENT_THEME_PLAN.md
+SCROLL_AUTOSCROLL_NOTES.md

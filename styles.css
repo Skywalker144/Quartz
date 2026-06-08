@@ -8,6 +8,7 @@
   --accent: #f2f2f2;
   --accent-text: #1c1c1c;
   --accent-soft: #363636;
+  --crystal: #bd9cff;         /* brand amethyst — the one spot of colour, reserved for the quartz crystal */
   --seg-on: #3d3d3d;          /* selected segment: a subtly raised surface, not a stark white block */
   --user-bubble: #2c2c2c;
   --danger: #e06666;
@@ -44,6 +45,7 @@
   --accent: #141414;
   --accent-text: #ffffff;
   --accent-soft: #ececec;
+  --crystal: #7a4fd6;         /* brand amethyst (light) */
   --seg-on: #ffffff;
   --user-bubble: #f0f0f0;
   --danger: #c0392b;
@@ -334,6 +336,19 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .about-features .af-k { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
 .about-features .af-v { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
 .about-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 18px; font-variant-numeric: tabular-nums; opacity: .8; }
+/* release history (关于 → 更新日志) */
+.about-changelog { width: 100%; max-width: 460px; margin: 20px 0 0; border-top: 1px solid var(--border); padding-top: 16px; text-align: left; }
+.about-cl-head { font-size: 12.5px; font-weight: 600; color: var(--text-dim); margin-bottom: 8px; }
+.about-cl-body { max-height: 280px; overflow-y: auto; padding-right: 8px; }
+/* scoped under #modal-body to beat the settings section-title rules (#modal-body section h3 etc.) */
+#modal-body .about-cl-body h2 { font-size: 13px; font-weight: 700; color: var(--text); margin: 16px 0 6px; padding-top: 13px; border-top: 1px solid var(--border); }
+#modal-body .about-cl-body h2:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+#modal-body .about-cl-body h3 { font-size: 11.5px; font-weight: 600; color: var(--text-dim); margin: 10px 0 3px; }
+#modal-body .about-cl-body ul { margin: 3px 0 8px; padding-left: 17px; }
+#modal-body .about-cl-body li { margin: 2px 0; font-size: 12px; line-height: 1.6; color: var(--text); }
+#modal-body .about-cl-body > p { margin: 3px 0 8px; font-size: 12px; line-height: 1.6; color: var(--text-dim); }
+#modal-body .about-cl-body strong { font-weight: 600; }
+#modal-body .about-cl-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88em; background: var(--accent-soft); padding: .1em .35em; border-radius: 4px; }
 
 /* ---- suggested-model chips (manage models) ---- */
 .sugg-group { margin-bottom: 11px; }
@@ -437,7 +452,31 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 /* streaming loader — the Quartz crystal with a highlight rotating around its facets (matches the icon) */
 .qz-load { display: inline-flex; vertical-align: -6px; margin-left: 3px; }
 .qz-crystal { width: 24px; height: 24px; }
-.qz-crystal .qc, .qz-crystal .qc-center { fill: var(--text); }
+.qz-crystal .qc, .qz-crystal .qc-center { fill: var(--crystal); }
+/* shared faceted-gem look (answer crest + settings preview), coloured by --crystal */
+.qz-gem svg { width: 100%; height: 100%; display: block; }
+.qz-gem .qc, .qz-gem .qc-center { fill: var(--crystal); }
+/* at rest: a graded gem (lit top-left, dim bottom-right) — floor kept high so colour stays vivid, not greyed */
+.qz-gem .qc-center { opacity: .88; }
+.qz-gem .p1 { opacity: 1; }   .qz-gem .p2 { opacity: .66; } .qz-gem .p3 { opacity: .58; }
+.qz-gem .p4 { opacity: .5; }  .qz-gem .p5 { opacity: .62; } .qz-gem .p6 { opacity: .72; }
+.qz-gem .p7 { opacity: .8; }  .qz-gem .p8 { opacity: .92; }
+/* while generating: the highlight travels around the nine facets (same effect as the old loader) */
+.qz-gem.live .qc-center { opacity: .26; }
+.qz-gem.live .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }
+.qz-gem.live .p1 { animation-delay: 0s; }     .qz-gem.live .p2 { animation-delay: -.175s; }
+.qz-gem.live .p3 { animation-delay: -.35s; }  .qz-gem.live .p4 { animation-delay: -.525s; }
+.qz-gem.live .p5 { animation-delay: -.7s; }   .qz-gem.live .p6 { animation-delay: -.875s; }
+.qz-gem.live .p7 { animation-delay: -1.05s; } .qz-gem.live .p8 { animation-delay: -1.225s; }
+@media (prefers-reduced-motion: reduce) { .qz-gem.live .qc { animation: none; opacity: .5; } }
+/* answer crest: in the LEFT GUTTER of each AI answer — text keeps its normal full-width position; the
+   crystal is vertically centred on the FIRST line (top = half a line-height, then pulled up by half its height) */
+.msg-assistant .msg-content { position: relative; }
+.ans-crest { position: absolute; left: -48px; top: 0.85em; transform: translateY(-50%); width: 36px; height: 36px; line-height: 0; }
+.msg-content > .ans-crest + * { margin-top: 0; }                     /* keep the first line flush to the top so the crystal centres correctly */
+.msg-content:has(> .ans-crest.live) { min-height: 3.4em; }           /* reserve two lines while the first tokens arrive */
+/* settings preview crystal (外观 → 强调色) */
+.accent-crystal { display: inline-block; width: 42px; height: 42px; line-height: 0; flex-shrink: 0; margin-right: 16px; }
 .qz-crystal .qc-center { opacity: .26; }
 .qz-crystal .qc { opacity: .15; animation: qzfacet 1.4s ease-in-out infinite; }
 .qz-crystal .p1 { animation-delay: 0s; } .qz-crystal .p2 { animation-delay: -.175s; }
@@ -489,7 +528,7 @@ svg.ic { display: block; flex-shrink: 0; }
 
 /* Empty state */
 #empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 12px; padding-bottom: 13vh; }
-#empty .logo { line-height: 0; color: var(--text); opacity: .9; margin-bottom: 4px; }
+#empty .logo { line-height: 0; color: var(--crystal); opacity: .9; margin-bottom: 4px; }
 #empty h2 { color: var(--text); margin: 0; font-weight: 600; }
 #empty-guide { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; color: var(--text-dim); text-align: center; }
 #empty-guide .gr { display: flex; align-items: center; justify-content: center; gap: 7px; }
@@ -510,6 +549,33 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 }
 #scroll-btn.show { opacity: 1; transform: none; pointer-events: auto; }
 #scroll-btn:hover { color: var(--text); background: var(--accent-soft); }
+
+/* ---- First-run usage guide (paginated: left text, right illustration) ---- */
+.guide-bg { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.38); }
+.guide-bg.show { display: flex; }
+.guide-modal { width: 100%; max-width: 880px; background: var(--bg); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-pop); padding: 20px 28px 22px; }
+.guide-head { display: flex; align-items: center; justify-content: space-between; }
+.guide-head h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--text-dim); }
+.guide-x { border: none; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 15px; width: 28px; height: 28px; border-radius: 7px; display: flex; align-items: center; justify-content: center; }
+.guide-x:hover { background: var(--accent-soft); color: var(--text); }
+.guide-body { display: flex; align-items: center; gap: 36px; min-height: 248px; padding: 16px 6px 22px; }
+.guide-left { flex: 1; min-width: 0; }
+.guide-left h3 { margin: 0 0 13px; font-size: 23px; font-weight: 600; }
+.guide-left p { margin: 0; font-size: 14.5px; color: var(--text-dim); line-height: 1.85; }
+.guide-left kbd { font-size: 11px; }
+.guide-art { width: 392px; height: 272px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; padding: 14px; }
+.guide-art img { max-width: 100%; max-height: 100%; border-radius: 7px; display: block; }
+.guide-foot { display: flex; align-items: center; justify-content: space-between; }
+.guide-dots { display: flex; gap: 7px; }
+.guide-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); cursor: pointer; transition: background .15s ease, transform .15s ease; }
+.guide-dot.active { background: var(--text); transform: scale(1.18); }
+.guide-nav { display: flex; gap: 8px; }
+.guide-btn { font: inherit; font-size: 13px; font-weight: 500; padding: 7px 16px; border-radius: 9px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text); }
+.guide-btn:hover { background: var(--accent-soft); }
+.guide-btn.prev { color: var(--text-dim); }
+.guide-btn.prev:disabled { opacity: .35; cursor: default; background: transparent; }
+.guide-btn.next { background: var(--accent-soft); border-color: transparent; }
+.guide-btn.next:hover { background: var(--border); }
 
 /* ---------- Composer (floats over the chat; text scrolling under it blurs & fades) ---------- */
 #composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; pointer-events: none; padding: 56px 18px 16px calc(18px + var(--nodemap-w)); }
@@ -768,6 +834,14 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .set-row-c input[type=text] { width: 150px; }
 .set-row-c .range-wrap { width: 240px; }
 .set-row-c #proxy-test { margin-right: 9px; }
+/* accent-colour picker: a row of quartz-variety swatches */
+.swatch-row { display: flex; gap: 9px; align-items: center; }
+.swatch { width: 24px; height: 24px; border-radius: 50%; border: none; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(127,127,127,.28); transition: transform .12s ease; }
+.swatch:hover { transform: scale(1.12); }
+.swatch.on { box-shadow: 0 0 0 2px var(--bg-soft), 0 0 0 3.5px var(--text); }
+/* custom-colour swatch: a rainbow chip that opens the native colour picker (hidden input fills it) */
+.swatch.custom { position: relative; overflow: hidden; background: conic-gradient(from 90deg, #ff9fc2, #f6cb45, #56d79b, #74b6ff, #bd9cff, #ff9fc2); }
+.swatch.custom input[type=color] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: none; opacity: 0; cursor: pointer; }
 
 /* full-width stacked block (textarea etc.) within the borderless layout */
 .set-block { padding: 15px 2px; border-bottom: 1px solid var(--border); }

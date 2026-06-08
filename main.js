@@ -300,6 +300,8 @@ function seedConfig() {
 }
 ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
+// Read the bundled CHANGELOG.md (works inside the asar) so 设置→关于 can show the release history.
+ipcMain.handle("get-changelog", () => { try { return fs.readFileSync(path.join(__dirname, "CHANGELOG.md"), "utf8"); } catch (e) { return ""; } });
 
 // One-time: decrypt API keys that a brief earlier build stored via the OS keychain, so the renderer
 // can convert them back to plaintext. (Key encryption was removed — it popped a keychain prompt on
