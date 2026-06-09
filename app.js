@@ -88,6 +88,7 @@ let autoScroll = true;   // follow streaming output only while the user is at th
 let pinTop = null;       // while answering: target scrollTop that keeps the user's message at the top
 let lastSetTop = -1;     // the scrollTop WE last set programmatically — used to tell our scrolls from the user's
 let nodePinned = null;   // after clicking a node: keep THAT node highlighted until the user scrolls manually
+let selPointerDown = false; // mouse held down in the transcript (selecting): pause streaming re-renders so the drag's anchor node isn't replaced
 const mql = window.matchMedia("(prefers-color-scheme: dark)");
 // Smoothly glide scrollTop toward a moving target with a rAF easing loop (buttery during streaming,
 // no per-line jumps). The goal is updated continuously; the loop keeps chasing it.
@@ -162,6 +163,10 @@ const DAILY_PROMPT = `你是 Quartz 的日常助手——聪明、靠谱、知�
 - 别套路：不用"好问题""你说得对"之类的开场，不复述我的问题，不灌道德鸡汤，不加无关免责声明。
 - 有观点没关系，但目标是把事情讲清楚、对我有用。`;
 
+// 美元→人民币汇率（固定值，费用换算的单一来源）。货币单位与汇率的设置项已移除：费用一律按人民币显示。
+// ⚠️ 调汇率只改这一处——usdToCny() 与 DeepSeek 参考汇率 DEEPSEEK_CNY_PER_USD 都引用它。
+const DEFAULT_USD_CNY = 6.78;
+
 function freshState() {
   return {
     settings: {
@@ -177,7 +182,7 @@ function freshState() {
       sidebar: { width: 264, collapsed: false },
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
-      general: { currency: "usd", usdCny: 7.2, restoreLast: true },
+      general: { restoreLast: true },
       tempBumped: true,
       guideSeen: false,
     },
@@ -689,6 +694,65 @@ function renderAnswer(contentEl, html, live) {
 }
 function stopCrest(contentEl) { const c = contentEl && contentEl.querySelector(":scope > .ans-crest"); if (c) c.classList.remove("live"); }
 
+/* ---- 思考窗口（reasoning）：折叠 / 半展开(110px) / 完全展开；顶栏切折叠⇄展开，底部按钮切半⇄全。 ---- */
+function reasonMore(rEl) { const m = rEl.querySelector(".reasoning-more"); if (m) m.textContent = rEl.dataset.exp === "full" ? "收起 ▴" : "展开全部 ▾"; }
+function setReasonExp(rEl, exp) {
+  rEl.dataset.exp = exp; if (exp !== "collapsed") rEl.dataset.lastExp = exp; reasonMore(rEl);
+  // 完成态：把 max-height 设成真实内容高度（半展开封顶 110），收起时从真高度平滑收起、无死区。
+  // 思考态/折叠态清掉内联，交给 CSS（思考态 min=max 固定取景窗；折叠 max-height:0）。
+  const rb = rEl.querySelector(".reasoning-body"); if (!rb) return;
+  if (rEl.classList.contains("thinking") || exp === "collapsed") rb.style.maxHeight = "";
+  else rb.style.maxHeight = (exp === "full" ? rb.scrollHeight : Math.min(rb.scrollHeight, 110)) + "px";
+}
+function setReasonTitle(rEl, txt) { const t = rEl.querySelector(".reasoning-title"); if (t) t.textContent = txt; rEl.classList.toggle("thinking", txt === "思考中"); }
+function bindReason(rEl, row) {
+  const head = rEl.querySelector(".reasoning-head");
+  if (head) head.onclick = () => { setReasonExp(rEl, rEl.dataset.exp === "collapsed" ? (rEl.dataset.lastExp || "half") : "collapsed"); trackCrest(row); };
+  const more = rEl.querySelector(".reasoning-more");
+  if (more) more.onclick = (e) => { e.stopPropagation(); setReasonExp(rEl, rEl.dataset.exp === "full" ? "half" : "full"); trackCrest(row); };
+}
+// 水晶定位：思考时骑在思考窗口的垂直中线上；否则落在回答首行（CSS 默认 top:0.85em）。top 的 CSS 过渡产生移动动画。
+function placeCrest(row) {
+  if (!row) return;
+  const cEl = row.querySelector(".msg-body > .msg-content");
+  const crest = cEl && cEl.querySelector(":scope > .ans-crest");
+  if (!crest) return;
+  const r = row.querySelector(".reasoning");
+  if (row.classList.contains("thinking") && r && r.style.display !== "none") {
+    const rRect = r.getBoundingClientRect(), cRect = cEl.getBoundingClientRect();   // 相对偏移与滚动无关
+    crest.style.top = Math.round(rRect.top + rRect.height / 2 - cRect.top) + "px";
+  } else {
+    crest.style.top = "";   // 回到 CSS 默认：回答首行
+  }
+}
+// 思考窗口尺寸变化的动画期间（出现 / 收起 / 切换大小），逐帧把水晶贴着布局放（关掉水晶自身过渡，避免追赶滞后）：
+// 布局平滑动 → 水晶平滑动，不再瞬移。约 360ms 覆盖一次过渡，结束后恢复过渡。目标类型不变时用它（思考中始终对准窗口中线）。
+let crestRAF = 0;
+function trackCrest(row, ms) {
+  if (!row) return;
+  const cEl = row.querySelector(".msg-body > .msg-content");
+  const crest = cEl && cEl.querySelector(":scope > .ans-crest");
+  if (!crest) return;
+  if (crestRAF) cancelAnimationFrame(crestRAF);
+  crest.style.transition = "none";
+  placeCrest(row);   // 立即放一次，避免首帧停在跳变位置
+  const start = performance.now(), dur = ms || 360;
+  const step = (now) => { placeCrest(row); if (now - start < dur) crestRAF = requestAnimationFrame(step); else { crest.style.transition = ""; crestRAF = 0; } };
+  crestRAF = requestAnimationFrame(step);
+}
+// 思考结束（回答开始 / 整体完成）：标题改「思考过程」、窗口收起；水晶恢复过渡，随收起动画一起滑回回答首行。
+function finishThinking(row) {
+  if (!row) return;
+  if (crestRAF) { cancelAnimationFrame(crestRAF); crestRAF = 0; }
+  const cEl = row.querySelector(".msg-body > .msg-content");
+  const crest = cEl && cEl.querySelector(":scope > .ans-crest");
+  if (crest) crest.style.transition = "";   // 恢复过渡 → top 改变会平滑滑动
+  const r = row.querySelector(".reasoning");
+  if (r) { setReasonTitle(r, "思考过程"); setReasonExp(r, "collapsed"); }
+  row.classList.remove("thinking");
+  placeCrest(row);   // top → ""（回答首行）；与收起动画一起平滑收束
+}
+
 // CommonMark emphasis won't fire when a ** / * delimiter sits flush against CJK punctuation with a CJK
 // letter on the other side (Chinese uses no spaces), so "**加粗（注）**的" renders literally. Slip a
 // zero-width space between the delimiter and the punctuation to restore "flanking"; it is stripped back
@@ -734,9 +798,9 @@ function sanitizeHtml(html) {
   });
 }
 // Cost is charged in USD; the user can display it in USD or CNY (fixed, editable rate — see 设置 → 常规).
-function curUnit() { const g = (state && state.settings && state.settings.general) || {}; return g.currency === "cny" ? "cny" : "usd"; }
+function curUnit() { return "cny"; }            // 费用固定按人民币显示（货币单位/汇率的设置项已移除）
 function curSym() { return curUnit() === "cny" ? "¥" : "$"; }
-function usdToCny() { const g = (state && state.settings && state.settings.general) || {}; const r = Number(g.usdCny); return (r > 0 && isFinite(r)) ? r : 7.2; }
+function usdToCny() { return DEFAULT_USD_CNY; }  // 固定汇率（汇率设置项已移除）
 function convAmt(usd) { return curUnit() === "cny" ? usd * usdToCny() : usd; }
 function trimNum(s) { return s.indexOf(".") >= 0 ? s.replace(/0+$/, "").replace(/\.$/, "") : s; }
 // Clean, friendly inline cost: 2 decimals, or "<¥0.01" when under one cent (hover the element for the exact value).
@@ -747,7 +811,7 @@ function fmtCost(c) {
   if (v < 0.01) return "<" + sym + "0.01";
   return sym + v.toFixed(2);
 }
-// Exact cost for tooltips — full precision in the chosen currency (plus the USD source when showing CNY).
+// Exact cost for tooltips — full precision in RMB, plus the USD source × rate (cost is stored in USD).
 function fmtCostExact(c) {
   if (c == null) return "";
   const sym = curSym(), v = convAmt(c);
@@ -761,6 +825,26 @@ function convTotals(conv) {
   let pt = 0, ct = 0, cost = 0, has = false;
   for (const m of conv.messages) if (m.usage) { has = true; pt += m.usage.prompt_tokens || 0; ct += m.usage.completion_tokens || 0; cost += m.usage.cost || 0; }
   return { pt, ct, cost, has };
+}
+// DeepSeek 不像 OpenRouter 那样在 usage 里回传 cost，只给 token 数 + 缓存命中/未命中拆分，所以本地按官方单价估算。
+// 官方按人民币计价（¥ / 每百万 token），命中缓存(cacheHit)的输入比未命中(cacheMiss)便宜很多——这里存人民币原价，便于核对/调价。
+// 算出人民币成本后，按内置参考汇率换成美元存进 usage.cost：与 OpenRouter 等同口径（usage.cost 一律美元），
+// 最终人民币展示由 convAmt 按固定汇率 DEFAULT_USD_CNY 换算，故人民币显示就是官方原价。
+// ⚠️ 官方调价时改下面的数字即可；想改汇率改 DEFAULT_USD_CNY。
+const DEEPSEEK_CNY_PER_USD = DEFAULT_USD_CNY;
+const DEEPSEEK_PRICES = {
+  "deepseek-v4-pro":   { cacheHit: 0.025, cacheMiss: 3, output: 6 },
+  "deepseek-v4-flash": { cacheHit: 0.02,  cacheMiss: 1, output: 2 },
+};
+// 入参是 DeepSeek 原始 usage（含 prompt_cache_hit_tokens / prompt_cache_miss_tokens）；表里没有的模型返回 undefined（退回只显示 token）。
+function deepseekCost(model, u) {
+  const p = DEEPSEEK_PRICES[model];
+  if (!p || !u) return undefined;
+  const hit = u.prompt_cache_hit_tokens || 0;
+  const miss = (u.prompt_cache_miss_tokens != null) ? u.prompt_cache_miss_tokens : Math.max(0, (u.prompt_tokens || 0) - hit);
+  const out = u.completion_tokens || 0;
+  const cny = (hit * p.cacheHit + miss * p.cacheMiss + out * p.output) / 1e6;   // 人民币成本
+  return cny / DEEPSEEK_CNY_PER_USD;   // usage.cost 统一存美元
 }
 function toast(msg, action) {
   let t = document.getElementById("toast");
@@ -1518,7 +1602,7 @@ function buildMessage(msg, index) {
   inner.className = "msg-inner";
   inner.innerHTML =
     '<div class="msg-body">' +
-      '<div class="reasoning" style="display:none"><div class="reasoning-head">' + ic("bulb", 14) + '<span>思考过程</span></div><div class="reasoning-body msg-content"></div></div>' +
+      '<div class="reasoning" data-exp="collapsed" style="display:none"><div class="reasoning-head">' + ic("bulb", 14) + '<span class="reasoning-title">思考过程</span></div><div class="reasoning-body msg-content"></div><button type="button" class="reasoning-more" tabindex="-1">展开全部 ▾</button></div>' +
       '<div class="attachments"></div>' +
       '<div class="msg-content"></div>' +
       '<div class="msg-meta"><div class="msg-actions"></div><div class="msg-usage"></div></div>' +
@@ -1575,11 +1659,13 @@ function buildMessage(msg, index) {
   else contentEl.innerHTML = '<span class="dim">…</span>';
 
   if (!isUser && msg.reasoning) {
-    inner.querySelector(".reasoning").style.display = "block";
+    const rEl = inner.querySelector(".reasoning");
+    rEl.style.display = "block";
     inner.querySelector(".reasoning-body").innerHTML = renderMarkdown(msg.reasoning);
+    setReasonExp(rEl, "collapsed");      // 历史/完成态：默认收起
+    setReasonTitle(rEl, "思考过程");
+    bindReason(rEl, row);
   }
-  const rhead = inner.querySelector(".reasoning-head");
-  if (rhead) rhead.onclick = () => { const b = inner.querySelector(".reasoning-body"); b.style.display = b.style.display === "none" ? "block" : "none"; };
 
   const actions = inner.querySelector(".msg-actions");
   const mk = (icoName, label, cls, fn) => { const b = document.createElement("button"); b.className = "act" + (cls ? " " + cls : ""); b.innerHTML = ic(icoName, 13) + "<span>" + label + "</span>"; b.onclick = fn; return b; };
@@ -2075,7 +2161,10 @@ async function streamChat(ref, payload, opts) {
         const rc = delta.reasoning != null ? delta.reasoning : delta.reasoning_content;
         if (rc) { racc += rc; onReasoning(racc); }
       }
-      if (json.usage) usage = { prompt_tokens: json.usage.prompt_tokens, completion_tokens: json.usage.completion_tokens, cost: json.usage.cost };
+      if (json.usage) {
+        usage = { prompt_tokens: json.usage.prompt_tokens, completion_tokens: json.usage.completion_tokens, cost: json.usage.cost };
+        if (usage.cost == null && ref.provider === "deepseek") usage.cost = deepseekCost(ref.model, json.usage);  // DeepSeek 不回 cost，本地按价格表估算
+      }
     });
   } else if (prov.kind === "anthropic") {
     const amsgs = messages.map(m => ({ role: m.role, content: toAnthropicContent(m) }));
@@ -2197,6 +2286,7 @@ async function runCompletion(conv, opts) {
   restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
     ? { text: um.content || "", attachments: Array.isArray(um.attachments) ? um.attachments.slice() : [] } : null;
   pinTop = null; autoScroll = false; nodePinned = null;   // the pin (below) drives the streaming scroll
+  selPointerDown = false;   // clear any stuck selection-press flag from a prior turn (safety; mouseup normally clears it)
   save(); renderMessages(); renderSidebar();
 
   const box = document.getElementById("messages");
@@ -2235,9 +2325,13 @@ async function runCompletion(conv, opts) {
       history = sliced;
     }
   }
-  let acc = "", racc = "", usage = null, aborted = false, errInfo = null;
-  // While the user is actively selecting text in the transcript, don't rebuild the streaming DOM
-  // (that would collapse the selection / snap it to the start). Buffer; the next tick re-renders.
+  let acc = "", racc = "", usage = null, aborted = false, errInfo = null, answerStarted = false, reasonShown = false;
+  // While the user is selecting text in the transcript, don't rebuild the streaming DOM (replacing the
+  // selection's anchor node mid-drag snaps the selection to the top of the conversation). Two guards together:
+  //  · selPointerDown — covers the press→first-move window where the selection is still collapsed (a chunk
+  //    landing then would replace the node under the caret); set on mousedown, cleared on mouseup (listeners below).
+  //  · userSelecting() — covers an established (non-collapsed) selection that lingers after the mouse is released.
+  // Either way we skip the re-render; acc still advances, and the next un-suppressed chunk (or completion) catches up.
   const userSelecting = () => { const s = window.getSelection && window.getSelection(); return !!(s && !s.isCollapsed && s.rangeCount && box.contains(s.anchorNode)); };
   try {
     const r = await streamChat(ref, { system: system, messages: history }, {
@@ -2249,8 +2343,8 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (userSelecting()) return; renderAnswer(contentEl, renderMarkdown(t), true); enhanceCode(box); applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (userSelecting()) return; if (reasoningWrap) reasoningWrap.style.display = "block"; if (reasoningBody) reasoningBody.innerHTML = renderMarkdown(rt); applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ renderAnswer(contentEl, renderMarkdown(t), true); enhanceCode(box); applyAutoScroll(box); },
+      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); enhanceCode(reasoningBody); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（markdown/公式 renderMarkdown 已内联渲染） */ applyAutoScroll(box); },
     });
     acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
@@ -2259,6 +2353,7 @@ async function runCompletion(conv, opts) {
   }
 
   stopCrest(contentEl);
+  finishThinking(row);   // 思考结束：标题→思考过程、窗口收起、水晶落回回答（reasoning-only 回复也走到这里）
   box.classList.remove("streaming");
   cancelSmooth();
   setSending(false); abortController = null;
@@ -2644,7 +2739,7 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "services"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
+function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "general"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
 function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); maybeShowGuide(); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
@@ -2887,15 +2982,8 @@ function fillSettings() {
   const ps = document.getElementById("proxy-test-status"); if (ps) { ps.textContent = ""; ps.className = "key-test-status"; }
   // general
   const g = state.settings.general || {};
-  const curSel = document.getElementById("set-currency"); if (curSel) curSel.value = (g.currency === "cny" ? "cny" : "usd");
-  const rate = document.getElementById("set-usdcny"); if (rate) rate.value = (Number(g.usdCny) > 0 ? g.usdCny : 7.2);
-  updateCurrencyRows();
   setToggle("set-restorelast-tog", g.restoreLast !== false);
   if (window.chatbox && window.chatbox.getAutoUpdate) window.chatbox.getAutoUpdate().then(on => setToggle("set-autoupdate-tog", on)).catch(() => {});   // reflect the main-process auto-update flag
-}
-function updateCurrencyRows() {
-  const cny = !!(state.settings.general && state.settings.general.currency === "cny");
-  const rr = document.getElementById("rate-row"); if (rr) rr.classList.toggle("hidden", !cny);
 }
 
 // ---- segmented controls ----
@@ -3011,8 +3099,6 @@ function setupSettingsLive() {
   // ---- general ----
   bindToggle("set-autoupdate-tog", on => { if (window.chatbox && window.chatbox.setAutoUpdate) window.chatbox.setAutoUpdate(on); });
   bindToggle("set-restorelast-tog", on => { state.settings.general.restoreLast = on; save(); });
-  { const cs = document.getElementById("set-currency"); if (cs) cs.addEventListener("change", e => { state.settings.general.currency = (e.target.value === "cny" ? "cny" : "usd"); updateCurrencyRows(); save(); renderMessages(); }); }
-  { const rt = document.getElementById("set-usdcny"); if (rt) rt.addEventListener("input", e => { const n = Number(e.target.value); state.settings.general.usdCny = (n > 0 ? n : 7.2); save(); renderMessages(); }); }
   { const sg = document.getElementById("set-show-guide"); if (sg) sg.onclick = openGuide; }
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
@@ -3644,6 +3730,10 @@ messagesBox.addEventListener("scroll", () => {
 // a deliberate wheel / touch scroll releases the "pin user message to top" lock and stops the glide
 messagesBox.addEventListener("wheel", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
 messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = null; cancelSmooth(); }, { passive: true });
+// Pressing in the transcript starts a (possibly text-selecting) drag — pause streaming re-renders until release
+// so the selection's anchor node isn't replaced mid-drag (which would snap the selection to the top). See onDelta.
+messagesBox.addEventListener("mousedown", () => { selPointerDown = true; });
+document.addEventListener("mouseup", () => { selPointerDown = false; });
 // Tap the floating ↓ to jump to the bottom and resume following the stream.
 const _scrollBtn = document.getElementById("scroll-btn");
 if (_scrollBtn) _scrollBtn.addEventListener("click", () => {

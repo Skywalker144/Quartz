@@ -151,7 +151,8 @@ svg { display: block; }
 }
 .conv-row { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
 .conv .ci { flex-shrink: 0; }
-.conv .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 标题截断不用省略号，改右侧透明渐隐：mask 让文字本身淡出，可叠在 .active / hover 等任意背景上；短标题到不了右边缘，不受影响。 */
+.conv .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 .conv:hover { background: var(--bg-elev); color: var(--text); }
 .conv.active { background: var(--accent-soft); color: var(--text); }
 /* second line: prompt pill on the left, rename / delete actions on the right */
@@ -448,7 +449,19 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .reasoning { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); overflow: hidden; }
 .reasoning-head { font-size: 12.5px; color: var(--text-dim); padding: 7px 11px; cursor: pointer; user-select: none; font-weight: 600; }
 .reasoning-head:hover { color: var(--text); }
-.reasoning-body { font-size: 13px; color: var(--text-dim); padding: 2px 12px 10px; max-height: 110px; overflow-y: auto; line-height: 1.6; }
+/* reasoning 正文三态。完成态按内容高度 + max-height 封顶；思考态用「固定高度取景窗」（内容只在窗内滚动），
+   避免每多一行就把窗口和水晶顶动。height 与 max-height 都做过渡，折叠/展开都有动画。 */
+.reasoning-body { font-size: 13px; color: var(--text-dim); padding: 2px 12px 10px; overflow-y: auto; line-height: 1.6; transition: min-height .3s ease, max-height .3s ease, padding .3s ease, opacity .25s ease; }
+.reasoning:not(.thinking)[data-exp="half"] .reasoning-body { max-height: 110px; }
+.reasoning:not(.thinking)[data-exp="full"] .reasoning-body { max-height: 1500px; }
+.reasoning.thinking[data-exp="half"] .reasoning-body { min-height: 110px; max-height: 110px; }
+.reasoning.thinking[data-exp="full"] .reasoning-body { min-height: 60vh; max-height: 60vh; }
+.reasoning[data-exp="collapsed"] .reasoning-body { min-height: 0; max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
+/* 半/全展开时底部出现「展开全部 ▾」/「收起 ▴」按钮；折叠时隐藏 */
+.reasoning-more { display: none; width: 100%; border: none; border-top: 1px solid var(--border); background: transparent; color: var(--text-dim); font-size: 12px; font-weight: 600; padding: 6px; cursor: pointer; }
+.reasoning-more:hover { color: var(--text); background: var(--bg-elev); }
+.reasoning[data-exp="half"] .reasoning-more, .reasoning[data-exp="full"] .reasoning-more { display: block; }
+@media (prefers-reduced-motion: reduce) { .reasoning-body { transition: none; } }
 /* streaming loader — the Quartz crystal with a highlight rotating around its facets (matches the icon) */
 .qz-load { display: inline-flex; vertical-align: -6px; margin-left: 3px; }
 .qz-crystal { width: 24px; height: 24px; }
@@ -472,9 +485,12 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 /* answer crest: in the LEFT GUTTER of each AI answer — text keeps its normal full-width position; the
    crystal is vertically centred on the FIRST line (top = half a line-height, then pulled up by half its height) */
 .msg-assistant .msg-content { position: relative; }
-.ans-crest { position: absolute; left: -48px; top: 0.85em; transform: translateY(-50%); width: 36px; height: 36px; line-height: 0; }
+/* top 由 JS 控制：思考时抬到思考窗口中央，思考完落回首行；top 过渡产生「水晶移动」动画 */
+.ans-crest { position: absolute; left: -48px; top: 0.85em; transform: translateY(-50%); width: 36px; height: 36px; line-height: 0; transition: top .3s cubic-bezier(.4, 0, .2, 1); }
 .msg-content > .ans-crest + * { margin-top: 0; }                     /* keep the first line flush to the top so the crystal centres correctly */
 .msg-content:has(> .ans-crest.live) { min-height: 3.4em; }           /* reserve two lines while the first tokens arrive */
+.msg-row.thinking .msg-body > .msg-content { min-height: 0; }        /* 思考时水晶在思考窗口上，回答区不预留空行 */
+@media (prefers-reduced-motion: reduce) { .ans-crest { transition: none; } }
 /* settings preview crystal (外观 → 强调色) */
 .accent-crystal { display: inline-block; width: 42px; height: 42px; line-height: 0; flex-shrink: 0; margin-right: 16px; }
 .qz-crystal .qc-center { opacity: .26; }

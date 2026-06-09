@@ -151,7 +151,7 @@
           <input id="set-search" type="text" placeholder="搜索设置…" autocomplete="off" spellcheck="false">
         </div>
         <div class="nav-group">通用</div>
-        <button class="nav-item" data-sec="general" data-keywords="开机自启 自启 后台常驻 托盘 自动检查更新 更新 恢复上次对话 启动 货币单位 人民币 美元 汇率 费用 花费 计费 token 使用引导 常规 通用">常规</button>
+        <button class="nav-item" data-sec="general" data-keywords="开机自启 自启 后台常驻 托盘 自动检查更新 更新 恢复上次对话 启动 使用引导 常规 通用">常规</button>
         <button class="nav-item" data-sec="appearance" data-keywords="主题 深色 浅色 暗色 字体 字号 排版 内容宽度 信息密度 代码配色 强调色 颜色 外观">外观</button>
         <button class="nav-item" data-sec="prompts" data-keywords="系统提示词 提示词 prompt 角色 人设 预设">系统提示词</button>
         <div class="nav-group">模型</div>
@@ -170,7 +170,7 @@
           <!-- General -->
           <section data-sec="general" class="hidden">
             <h3>常规</h3>
-            <p class="sec-desc">启动、更新与费用显示等常规设置。改动实时生效。</p>
+            <p class="sec-desc">启动、更新等常规设置。改动实时生效。</p>
             <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">开机自启并常驻后台</div><div class="set-row-d">登录后在后台启动（主窗口不弹出），让速答随时可用；开启后关闭窗口会收进托盘而非退出。点托盘图标、Dock / 任务栏图标，或按打开主窗口的快捷键即可重新打开。</div></div>
               <div class="set-row-c"><button type="button" class="toggle" id="set-login-tog" role="switch" aria-checked="false"></button></div>
@@ -182,15 +182,6 @@
             <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">启动时恢复上次对话</div><div class="set-row-d">打开 Quartz 时回到上次正在看的那条对话；关闭则每次都从新对话开始。</div></div>
               <div class="set-row-c"><button type="button" class="toggle" id="set-restorelast-tog" role="switch" aria-checked="true"></button></div>
-            </div>
-            <div class="group-label">费用显示</div>
-            <div class="set-row">
-              <div class="set-row-info"><div class="set-row-t">货币单位</div><div class="set-row-d">token 花费按所选货币显示（各家计价原始均为美元）。</div></div>
-              <div class="set-row-c"><select id="set-currency"><option value="usd">美元 $</option><option value="cny">人民币 ¥</option></select></div>
-            </div>
-            <div class="set-row hidden" id="rate-row">
-              <div class="set-row-info"><div class="set-row-t">美元汇率</div><div class="set-row-d">1 美元 = ? 人民币，用于把花费换算成人民币。这点小额精度无所谓，按需调整即可。</div></div>
-              <div class="set-row-c"><input type="number" id="set-usdcny" min="1" max="30" step="0.1"></div>
             </div>
             <div class="group-label">使用引导</div>
             <div class="set-row">
