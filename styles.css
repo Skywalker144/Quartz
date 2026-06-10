@@ -150,33 +150,19 @@ svg { display: block; }
   margin-bottom: 2px;
 }
 .conv-row { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
-.conv .ci { flex-shrink: 0; }
 /* 标题截断不用省略号，改右侧透明渐隐：mask 让文字本身淡出，可叠在 .active / hover 等任意背景上；短标题到不了右边缘，不受影响。 */
 .conv .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 .conv:hover { background: var(--bg-elev); color: var(--text); }
 .conv.active { background: var(--accent-soft); color: var(--text); }
-/* second line: prompt pill on the left, rename / delete actions on the right */
-.conv-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-left: 24px; min-height: 20px; }
-.conv-sub { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; }
-.conv-time { flex-shrink: 0; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .conv-group { font-size: 11px; font-weight: 600; color: var(--text-dim); letter-spacing: .02em; padding: 12px 12px 4px; user-select: none; }
 .conv-group:first-child { padding-top: 4px; }
-.conv-tag { min-width: 0; overflow: hidden; }
-.conv-tag .cpill {
-  display: inline-block; max-width: 100%; box-sizing: border-box;
-  font-size: 10.5px; color: var(--text-dim); background: var(--accent-soft);
-  border: 1px solid var(--border); border-radius: 4px; padding: 0 6px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
-}
-.conv-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.conv-actions button { opacity: 0; border: none; background: transparent; color: var(--text-dim); cursor: pointer; border-radius: 4px; padding: 0 3px; line-height: 1; }
-.conv:hover .conv-actions button { opacity: .65; }
-.conv-actions .ren { font-size: 14px; }
+/* 单行对话项：标题占满，hover 时在标题右侧显出 置顶 / 删除（平时不占位，标题用满宽度） */
+.conv-actions { display: none; align-items: center; gap: 2px; flex-shrink: 0; }
+.conv:hover .conv-actions { display: flex; }
+.conv-actions button { opacity: .6; border: none; background: transparent; color: var(--text-dim); cursor: pointer; border-radius: 4px; padding: 0 3px; line-height: 1; }
 .conv-actions .del { font-size: 15px; }
-.conv-actions .ren:hover { opacity: 1; color: var(--text); }
 .conv-actions .del:hover { opacity: 1; color: var(--danger); }
-/* pinned items live under the 置顶 group header, so no persistent pin glyph is needed —
-   only the hover-revealed pin/unpin toggle in the actions row */
+/* pinned items live under the 置顶 group header — only the hover-revealed pin/unpin toggle is needed */
 .conv-actions .pin { display: inline-flex; align-items: center; padding: 0 3px; }
 .conv-actions .pin:hover { opacity: 1; color: var(--text); }
 
@@ -262,6 +248,8 @@ svg { display: block; }
   cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
 .hbtn:hover { color: var(--text); background: var(--bg-elev); }
+.hbtn:disabled { opacity: .38; cursor: not-allowed; }
+.hbtn:disabled:hover { color: var(--text-dim); background: transparent; }
 /* title is draggable (part of the header drag region); a gradient overlay fades the overflowing
    right edge instead of a hard cut — an overlay (not a CSS mask) so the drag layer can't defeat it */
 /* title + retitle icon hug each other at the left; the icon sits right after the title (small gap) */
@@ -382,6 +370,8 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
   background: var(--user-bubble); border: 1px solid var(--border);
   padding: 10px 14px; border-radius: 16px; width: fit-content; max-width: 86%;
 }
+/* image/file-only message: no text → no empty bubble, just the attachment */
+.msg-user .msg-content:empty { display: none; }
 .msg-user .attachments { justify-content: flex-end; }
 .msg-user .msg-meta { justify-content: flex-end; }
 /* inline edit: drop the bubble, edit full width */
@@ -443,7 +433,8 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 .code-copy:hover { color: var(--text); background: var(--bg-soft); }
 .code-copy.done { color: var(--text); }
 .msg-content .code-block > pre { margin: 0; border: none; border-radius: 0; background: transparent; }
-.msg-content table { border-collapse: collapse; margin: 10px 0; }
+/* display:block + overflow-x：列很多的宽表格在消息内横向滚动，不再把布局撑破 */
+.msg-content table { border-collapse: collapse; margin: 10px 0; display: block; overflow-x: auto; max-width: 100%; }
 .msg-content th, .msg-content td { border: 1px solid var(--border); padding: 6px 10px; }
 .dim { color: var(--text-dim); }
 .reasoning { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); overflow: hidden; }
@@ -514,6 +505,13 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 /* Attachments in messages */
 .attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .att-img { max-height: 170px; max-width: 300px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; display: block; }
+/* 应用内图片查看器：暗色遮罩，滚轮缩放，点空白 / Esc 关闭 */
+#lightbox { position: fixed; inset: 0; z-index: 110; background: rgba(0, 0, 0, .82); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .18s ease; cursor: zoom-out; }
+#lightbox.show { opacity: 1; }
+#lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 10px; box-shadow: 0 12px 48px rgba(0, 0, 0, .5); cursor: default; transition: transform .12s ease-out; }
+/* 选中回答文字后浮出的「引用」按钮 */
+#quote-fab { position: fixed; z-index: 95; display: none; padding: 5px 13px; font-size: 12.5px; color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 999px; box-shadow: var(--shadow-pop); cursor: pointer; }
+#quote-fab:hover { background: var(--bg-soft); }
 .att-chip { display: flex; align-items: center; gap: 4px; padding: 6px 11px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; max-width: 260px; }
 .att-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -534,7 +532,7 @@ mark.search-hit.active { background: var(--accent); color: var(--accent-text); b
 svg.ic { display: block; flex-shrink: 0; }
 .act { display: inline-flex; align-items: center; gap: 4px; }
 .reasoning-head { display: flex; align-items: center; gap: 6px; }
-.conv .ci, .arch-item .ci, .tool-btn .tb-ico, .att-ico { display: inline-flex; align-items: center; }
+.tool-btn .tb-ico, .att-ico { display: inline-flex; align-items: center; }
 .att-ico { color: var(--text-dim); flex-shrink: 0; }
 .pending-chip .nm { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 
@@ -628,12 +626,18 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 /* prompt = leftmost plain text + caret (no background box) */
 #prompt-pill.cb-chip {
   display: inline-flex; align-items: center; max-width: 9.5rem;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; white-space: nowrap;
   font-size: 13px; color: var(--text); background: transparent;
   border: 1px solid transparent; border-radius: 8px; padding: 5px 9px;
   cursor: pointer; margin-right: 2px; flex-shrink: 0;
 }
 #prompt-pill.cb-chip:hover { background: var(--bg-elev); }
+/* 提示词名过长时右侧透明渐隐（替代省略号，与侧栏标题一致）；mask 只作用于内层文字 span，且仅在 .faded（真溢出）时启用 */
+#prompt-pill .pp-label { min-width: 0; overflow: hidden; white-space: nowrap; }
+#prompt-pill .pp-label.faded {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
 /* model = right-aligned plain text + caret, no border */
 #model-pill.cb-model {
   display: inline-flex; align-items: center; max-width: 14rem;

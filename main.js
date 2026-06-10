@@ -71,7 +71,8 @@ function saveWinState() {
   try {
     const max = mainWindow.isMaximized();
     const b = mainWindow.getNormalBounds ? mainWindow.getNormalBounds() : mainWindow.getBounds();
-    fs.writeFileSync(winStateFile(), JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: max }));
+    // zoom：视图菜单 ⌘+/- 改的是 zoomLevel，这里一并记住，重启后恢复
+    fs.writeFileSync(winStateFile(), JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: max, zoom: mainWindow.webContents.getZoomLevel() }));
   } catch (e) {}
 }
 
@@ -106,6 +107,10 @@ function createWindow(startHidden) {
   if (saved && saved.maximized) mainWindow.maximize();
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
+  // 恢复上次的界面缩放（视图菜单 ⌘+/- 设置的 zoomLevel）
+  if (saved && Number.isFinite(saved.zoom) && saved.zoom !== 0) {
+    mainWindow.webContents.once("did-finish-load", () => { try { mainWindow.webContents.setZoomLevel(saved.zoom); } catch (e) {} });
+  }
 
   // Persist size/position (debounced) so the window reopens where you left it.
   const scheduleWinSave = () => { clearTimeout(_winSaveT); _winSaveT = setTimeout(saveWinState, 400); };
@@ -408,6 +413,21 @@ ipcMain.handle("open-backups", () => {
   try { const d = backupsDir(); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
+// 自动备份的恢复入口：列出现有备份（新→旧）/ 读取指定一份（文件名白名单校验，杜绝路径穿越）。
+ipcMain.handle("backup-list", () => {
+  try {
+    const dir = backupsDir(); fs.mkdirSync(dir, { recursive: true });
+    return fs.readdirSync(dir).filter(f => /^quartz-auto-[\w.-]+\.json$/.test(f))
+      .map(f => { const st = fs.statSync(path.join(dir, f)); return { name: f, mtime: st.mtimeMs, size: st.size }; })
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch (e) { return []; }
+});
+ipcMain.handle("backup-read", (_e, name) => {
+  try {
+    if (!/^quartz-auto-[\w.-]+\.json$/.test(name || "")) return { ok: false, error: "无效的备份文件名" };
+    return { ok: true, json: fs.readFileSync(path.join(backupsDir(), name), "utf8") };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 // Keep the Windows/Linux window-controls overlay colours in sync with the app theme.
 ipcMain.on("set-titlebar-overlay", (_e, o) => {
   if (process.platform === "darwin" || !mainWindow || mainWindow.isDestroyed() || !mainWindow.setTitleBarOverlay) return;
@@ -461,9 +481,6 @@ function uSend(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("update-status", payload);
 }
 function releasesUrl() { return `https://github.com/${GH_OWNER}/${GH_REPO}/releases/latest`; }
-function ignoredPath() { return path.join(app.getPath("userData"), "ignored-update"); }
-function getIgnored() { try { return fs.readFileSync(ignoredPath(), "utf8").trim(); } catch (e) { return ""; } }
-function setIgnored(v) { try { fs.writeFileSync(ignoredPath(), v || "", "utf8"); } catch (e) {} }
 function appBundlePath() { return path.resolve(path.dirname(process.execPath), "..", ".."); } // …/Quartz.app
 
 // Stream a URL to disk via Chromium's net stack (follows redirects, honours system proxy).
@@ -559,7 +576,6 @@ function setupAutoUpdate() {
   autoUpdater.autoInstallOnAppQuit = !isMac;
   autoUpdater.on("update-available", (info) => {
     const ver = info && info.version;
-    if (ver && ver === getIgnored()) { uSend({ state: "none", version: ver, ignored: true }); return; }
     if (isMac) downloadMacUpdate(info);
     else uSend({ state: "downloading", version: ver });
   });
@@ -581,7 +597,6 @@ ipcMain.handle("update-check", async () => {
   catch (e) { uSend({ state: "error", message: e && e.message }); return { ok: false, error: e && e.message }; }
 });
 ipcMain.on("update-action", (_e, action) => {
-  if (action === "ignore") { const v = lastUpdate && lastUpdate.version; if (v) setIgnored(v); uSend({ state: "none", version: v, ignored: true }); return; }
   if (action === "page") { shell.openExternal(releasesUrl()); return; }
   if (process.platform === "darwin") installMacUpdate();
   else if (autoUpdater) { try { autoUpdater.quitAndInstall(); } catch (e) {} }

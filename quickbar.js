@@ -36,6 +36,7 @@ let controller = null;     // AbortController for the in-flight request
 let lastQuestion = "";
 let lastAnswer = "";
 let lastUsage = null;
+let histQuestion = "";     // 本会话最近一次提过的问题（resetAll 也不清；空输入框按 ↑ 唤回）
 
 function applyConfig(c) {
   if (c && typeof c === "object") cfg = c;
@@ -267,7 +268,7 @@ async function ask() {
   if (!text || mode === "asking") return;
   if (controller) { try { controller.abort(); } catch (e) {} }
   controller = new AbortController();
-  mode = "asking"; lastQuestion = text; lastAnswer = ""; lastUsage = null;
+  mode = "asking"; lastQuestion = text; histQuestion = text; lastAnswer = ""; lastUsage = null;
   showAnswer(true);
   ansContent.innerHTML = "";
   setLoading(true);            // blinking caret shows immediately, before the first token
@@ -342,12 +343,20 @@ inputEl.addEventListener("keydown", (e) => {
   // composition — that Enter must be left to the IME, not fire an answer. isComposing is the
   // standard signal; keyCode 229 is the legacy fallback some IMEs still send.
   if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) return;
-  // ⌘/Ctrl + Enter, or plain Enter once answered → continue in Quartz
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openMain(); return; }
-  if (e.key === "Enter" && !e.shiftKey) {
+  // 空输入框按 ↑ → 唤回本次会话最近一次提的问题（改一改再问）
+  if (e.key === "ArrowUp" && !e.isComposing && !inputEl.value.trim() && histQuestion) {
     e.preventDefault();
-    if (mode === "answered") openMain();
-    else if (mode !== "asking") ask();
+    inputEl.value = histQuestion; autoGrow(); reportHeight();
+    requestAnimationFrame(() => inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length));
+    return;
+  }
+  // ⌘/Ctrl + Enter → 直接进入 Quartz（带上当前问题/答案）
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); openMain(); return; }
+  // 输入框聚焦时回车 → 回答（可能已修改过的）新问题，然后让输入框失焦。
+  // 失焦后再按回车不会进到这里，改由下方 document 级处理 → 进入 Quartz（stopPropagation 避免本次回车被两处同时接住）。
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault(); e.stopPropagation();
+    if (mode !== "asking" && inputEl.value.trim()) { ask(); inputEl.blur(); }
     return;
   }
 });
@@ -355,6 +364,12 @@ inputEl.addEventListener("keydown", (e) => {
 // These work no matter what's focused inside the bar (input, answer text, or body) — the bug
 // was Esc only firing while the textarea had focus.
 document.addEventListener("keydown", (e) => {
+  // 输入框已失焦时按回车（且已有答案）→ 进入 Quartz，呼应提示「Enter 进入 Quartz」。
+  // 聚焦输入框时的回车由 inputEl 处理并 stopPropagation，不会走到这里（那是「回答新问题」）。
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+    if (document.activeElement !== inputEl && mode === "answered") { e.preventDefault(); openMain(); }
+    return;
+  }
   if (e.key === "Escape") {
     e.preventDefault();
     if (mode === "asking") { if (controller) { try { controller.abort(); } catch (err) {} } setLoading(false); }

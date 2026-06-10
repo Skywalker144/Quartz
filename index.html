@@ -151,7 +151,7 @@
           <input id="set-search" type="text" placeholder="搜索设置…" autocomplete="off" spellcheck="false">
         </div>
         <div class="nav-group">通用</div>
-        <button class="nav-item" data-sec="general" data-keywords="开机自启 自启 后台常驻 托盘 自动检查更新 更新 恢复上次对话 启动 使用引导 常规 通用">常规</button>
+        <button class="nav-item" data-sec="general" data-keywords="开机自启 自启 后台常驻 托盘 自动检查更新 更新 恢复上次对话 启动 使用引导 常规 通用 对话列表排序 排序 添加时间 修改时间 创建时间">常规</button>
         <button class="nav-item" data-sec="appearance" data-keywords="主题 深色 浅色 暗色 字体 字号 排版 内容宽度 信息密度 代码配色 强调色 颜色 外观">外观</button>
         <button class="nav-item" data-sec="prompts" data-keywords="系统提示词 提示词 prompt 角色 人设 预设">系统提示词</button>
         <div class="nav-group">模型</div>
@@ -162,7 +162,7 @@
         <button class="nav-item" data-sec="shortcuts" data-keywords="快捷键 全局 打开 quartz alt space 录制 组合键">快捷键</button>
         <div class="nav-group">应用</div>
         <button class="nav-item" data-sec="network" data-keywords="网络 代理 proxy clash 端口 socks http 连接测试">网络</button>
-        <button class="nav-item" data-sec="data" data-keywords="数据 备份 导入 导出 清空 存储 目录 迁移">数据</button>
+        <button class="nav-item" data-sec="data" data-keywords="数据 备份 导入 导出 清空 存储 目录 迁移 恢复 自动备份 还原">数据</button>
         <button class="nav-item" data-sec="about" data-keywords="关于 版本 更新 检查更新 更新日志 changelog 使用指南">关于</button>
       </nav>
       <div id="modal-body">
@@ -182,6 +182,10 @@
             <div class="set-row">
               <div class="set-row-info"><div class="set-row-t">启动时恢复上次对话</div><div class="set-row-d">打开 Quartz 时回到上次正在看的那条对话；关闭则每次都从新对话开始。</div></div>
               <div class="set-row-c"><button type="button" class="toggle" id="set-restorelast-tog" role="switch" aria-checked="true"></button></div>
+            </div>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">对话列表排序</div><div class="set-row-d">左侧对话的排序依据：「修改时间」最近聊过 / 改过的排在最上；「添加时间」最近新建的排在最上。</div></div>
+              <div class="set-row-c"><div class="seg" id="set-sidebarsort-seg"><button type="button" data-val="updated">修改时间</button><button type="button" data-val="created">添加时间</button></div></div>
             </div>
             <div class="group-label">使用引导</div>
             <div class="set-row">
@@ -443,6 +447,10 @@
             </div>
             <p class="sec-desc" id="data-stats"></p>
             <p class="sec-desc">应用每小时自动在本地保存一份对话备份（不含 API Key，滚动保留最近 8 份），以防意外丢失。</p>
+            <div class="set-row">
+              <div class="set-row-info"><div class="set-row-t">从自动备份恢复</div><div class="set-row-d">选择一份自动备份并一键还原。会覆盖当前的全部对话与设置；自动备份不含 API Key，现有 Key 会保留。</div></div>
+              <div class="set-row-c" style="display:flex;gap:8px;align-items:center"><select id="set-backup-sel"></select><button class="btn small" id="set-backup-restore" type="button">恢复</button></div>
+            </div>
             <div class="data-actions"><button class="btn" id="data-open-backups" type="button">打开自动备份文件夹</button></div>
             <p class="sec-desc data-warn">⚠️ 导出文件包含你的 API Key，请妥善保管、不要随意分享。导入会<strong>覆盖</strong>当前的全部对话与设置。</p>
           </section>

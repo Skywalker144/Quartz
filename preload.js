@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("chatbox", {
   decryptSecret: (s) => ipcRenderer.invoke("decrypt-secret", s),
   writeBackup: (json) => ipcRenderer.invoke("backup-write", json),
   openBackups: () => ipcRenderer.invoke("open-backups"),
+  listBackups: () => ipcRenderer.invoke("backup-list"),
+  readBackup: (name) => ipcRenderer.invoke("backup-read", name),
   getSeedConfig: () => ipcRenderer.invoke("seed-config"),
   getAppInfo: () => ipcRenderer.invoke("app-info"),
   getChangelog: () => ipcRenderer.invoke("get-changelog"),

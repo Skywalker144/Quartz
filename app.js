@@ -81,7 +81,8 @@ let nextWeb = false;        // web search toggle for the next new conversation
 let nextReasoning = false;  // reasoning/thinking toggle for the next new conversation
 let nextReasoningEffort = "medium"; // low | medium | high, for the next new conversation
 let abortController = null;
-let restoreOnAbort = null;   // {text, attachments} to return to the input box if the user hits Esc mid-answer
+let restoreOnAbort = null;   // {text, attachments} marker that this run was a fresh send (vs regenerate/continue)
+let undoSend = null;         // armed after Esc-stops a fresh send: a SECOND Esc undoes the whole turn (prompt → input box)
 let pending = [];        // composer attachments awaiting send
 let editingIndex = null; // index of message being edited inline
 let autoScroll = true;   // follow streaming output only while the user is at the bottom
@@ -182,7 +183,7 @@ function freshState() {
       sidebar: { width: 264, collapsed: false },
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
-      general: { restoreLast: true },
+      general: { restoreLast: true, sidebarSort: "updated" },
       tempBumped: true,
       guideSeen: false,
     },
@@ -593,6 +594,25 @@ function activeEffort() { const c = currentConv(); return (c ? c.reasoningEffort
 function toggleWeb() { const c = currentConv(); if (c) c.webSearch = !c.webSearch; else nextWeb = !nextWeb; save(); updateComposerToggles(); }
 function setEffort(level) { const c = currentConv(); if (c) { c.reasoningEffort = level; c.reasoning = true; } else { nextReasoningEffort = level; nextReasoning = true; } save(); updateComposerToggles(); warnIfNoReasoning(); }
 function warnIfNoReasoning() { const r = activeRef(); if (r && reasoningSupport(r) === "no") toast("ℹ️ 该模型不支持推理，思考开关对它无效（请求中会被忽略）"); }
+// 粗估当前对话将随下一条请求发出的上下文 token 数（中文≈0.7/字、其他≈3.6字符/token、图片≈800/张），
+// 只用于压缩按钮的提示，给「该不该压缩」一个直观参照。
+function estContextTokens(conv) {
+  if (!conv || !conv.messages.length) return 0;
+  let txt = activePromptText(conv) || "";
+  let imgs = 0;
+  let msgs = conv.messages;
+  if (conv.compaction && conv.compaction.summary) {
+    const cut = Math.min(conv.compaction.count, msgs.length);
+    if (msgs.length > cut) { txt += conv.compaction.summary; msgs = msgs.slice(cut); }
+  }
+  for (const m of msgs) {
+    txt += m.content || "";
+    for (const a of (m.attachments || [])) { if (a.kind === "image") imgs++; else if (a.kind === "textfile") txt += a.text || ""; }
+  }
+  const cjk = (txt.match(/[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/g) || []).length;
+  return Math.round(cjk * 0.7 + (txt.length - cjk) / 3.6 + imgs * 800);
+}
+function fmtTok(n) { return n >= 1000 ? ((n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k") : String(n); }
 function updateComposerToggles() {
   const w = document.getElementById("web-btn"); if (w) w.classList.toggle("active", activeWeb());
   const t = document.getElementById("think-btn");
@@ -601,6 +621,11 @@ function updateComposerToggles() {
     t.classList.toggle("active", on);
     const lvl = t.querySelector(".cb-think-lvl");
     if (lvl) lvl.textContent = on ? (EFFORT_LABELS[activeEffort()] || "中") : "";
+  }
+  const cb = document.getElementById("compact-btn");
+  if (cb) {
+    const n = estContextTokens(currentConv());
+    cb.dataset.tip = "压缩前文（AI 总结较早对话，省上下文）" + (n ? " · 当前上下文约 " + fmtTok(n) + " tokens" : "");
   }
 }
 // "yes" | "no" | "unknown" — only "no" comes from hard OpenRouter catalog data, so warnings never false-positive
@@ -870,6 +895,10 @@ function plainText(m) {
   (m.attachments || []).forEach(a => { t += " [" + (a.kind === "image" ? "图片" : a.name) + "]"; });
   return t.trim() || "（空）";
 }
+// 用户这一轮只发了附件（图片/文件）、没有任何文字 —— 此时这条没有可命名的提问文本，标题改用本轮回答来起。
+function isAttachmentOnly(m) { return !!(m && !((m.content || "").trim()) && (m.attachments || []).length); }
+// 紧跟某条用户消息之后、且已有实际内容的助手回答（回答还在生成 / 占位为空时返回 null）。
+function answerAfter(conv, userIndex) { const a = conv.messages[userIndex + 1]; return (a && a.role === "assistant" && (a.content || "").trim()) ? a : null; }
 
 /* ===================== Appearance / layout ===================== */
 function applyTheme() {
@@ -1070,7 +1099,7 @@ function renderPending() {
   row.style.display = "flex"; row.innerHTML = "";
   pending.forEach((a, i) => {
     const el = document.createElement("div");
-    if (a.kind === "image") { el.className = "pending-thumb"; const im = document.createElement("img"); im.src = a.dataUrl; el.appendChild(im); }
+    if (a.kind === "image") { el.className = "pending-thumb"; const im = document.createElement("img"); im.src = a.dataUrl; im.onclick = () => openLightbox(a.dataUrl); el.appendChild(im); }
     else {
       el.className = "pending-chip";
       const nm = document.createElement("span"); nm.className = "nm";
@@ -1148,6 +1177,19 @@ function convTime(c) {
   }
   return 0;
 }
+// 创建时间（不看 updatedAt）：createdAt，否则从 id 解码，否则 0。
+function convCreatedTime(c) {
+  if (c.createdAt) return c.createdAt;
+  if (typeof c.id === "string" && c.id.length > 5) {
+    const t = parseInt(c.id.slice(0, c.id.length - 5), 36);
+    if (t > 1262304000000 && t < Date.now() + 86400000) return t;
+  }
+  return 0;
+}
+// 列表排序 / 分组所用的时间：默认按修改时间（含 updatedAt），设置为「添加时间」时按创建时间。
+function convSortTime(c) {
+  return (state.settings.general && state.settings.general.sidebarSort === "created") ? convCreatedTime(c) : convTime(c);
+}
 function startOfDay(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
 function bucketOf(ts) {
   if (!ts) return "更早";
@@ -1175,20 +1217,12 @@ function buildConvEl(c) {
   const el = document.createElement("div");
   el.className = "conv" + (c.id === state.currentId ? " active" : "") + (c.pinned ? " pinned" : "");
   el.innerHTML =
-    '<div class="conv-row"><span class="ci">' + ic("chat", 15) + '</span><span class="title"></span></div>' +
-    '<div class="conv-meta"><span class="conv-sub"><span class="conv-time"></span><span class="conv-tag"></span></span>' +
+    '<div class="conv-row"><span class="title"></span>' +
     '<span class="conv-actions">' +
     '<button class="pin" title="' + (c.pinned ? "取消置顶" : "置顶") + '">' + PIN_SVG + '</button>' +
     '<button class="del" title="删除（移入已归档）">' + ic("x", 15) + '</button>' +
     '</span></div>';
   el.querySelector(".title").textContent = c.title || "新对话";
-  el.querySelector(".conv-time").textContent = relTime(convTime(c));
-  const pr = promptById(c.promptId);
-  if (pr) {
-    const tag = el.querySelector(".conv-tag");
-    const pill = document.createElement("span"); pill.className = "cpill"; pill.textContent = pr.name;
-    tag.appendChild(pill);
-  }
   el.onclick = () => { state.currentId = c.id; editingIndex = null; autoScroll = true; nodePinned = null; save(); renderAll(); };
   el.querySelector(".pin").onclick = (e) => { e.stopPropagation(); togglePin(c); };
   el.querySelector(".del").onclick = (e) => {
@@ -1241,10 +1275,10 @@ function renderSidebar() {
   const pool = blank ? matched.filter(c => c !== blank) : matched;
   // pinned next (own group), then the rest grouped by recency
   const pinned = pool.filter(c => c.pinned);
-  const rest = pool.filter(c => !c.pinned).sort((a, b) => convTime(b) - convTime(a));
+  const rest = pool.filter(c => !c.pinned).sort((a, b) => convSortTime(b) - convSortTime(a));
   if (pinned.length) { addHeader("置顶"); pinned.forEach(c => list.appendChild(buildConvEl(c))); }
   const groups = {};
-  rest.forEach(c => { const b = bucketOf(convTime(c)); (groups[b] = groups[b] || []).push(c); });
+  rest.forEach(c => { const b = bucketOf(convSortTime(c)); (groups[b] = groups[b] || []).push(c); });
   ["今天", "昨天", "近7天", "近30天", "更早"].forEach(b => {
     if (groups[b] && groups[b].length) { addHeader(b); groups[b].forEach(c => list.appendChild(buildConvEl(c))); }
   });
@@ -1259,6 +1293,34 @@ function scrollActiveConvIntoView() {
   if (!active) return;
   const offsetWithinContent = (active.getBoundingClientRect().top - list.getBoundingClientRect().top) + list.scrollTop;
   list.scrollTop = Math.max(0, offsetWithinContent - list.clientHeight * 0.2);
+}
+// 一段短缓动滚动（平滑且快），可被下一次滚动/即时设置打断。
+let convScrollRAF = 0;
+function animateScrollTop(el, to, dur) {
+  if (convScrollRAF) { cancelAnimationFrame(convScrollRAF); convScrollRAF = 0; }
+  const from = el.scrollTop, delta = to - from;
+  if (Math.abs(delta) < 1) { el.scrollTop = to; return; }
+  const start = performance.now(), ease = (t) => 1 - Math.pow(1 - t, 3);
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / (dur || 340));
+    el.scrollTop = from + delta * ease(t);
+    convScrollRAF = t < 1 ? requestAnimationFrame(step) : 0;
+  };
+  convScrollRAF = requestAnimationFrame(step);
+}
+// 把当前对话滚到列表「距顶 ~20%」处。默认仅当它不在可视区时才滚；force 则总是定位（如启动）；smooth 用缓动。
+function revealActiveConv(opts) {
+  opts = opts || {};
+  const list = document.getElementById("conv-list");
+  if (!list) return;
+  const active = list.querySelector(".conv.active");
+  if (!active) return;
+  const lr = list.getBoundingClientRect(), ar = active.getBoundingClientRect();
+  const visible = ar.top >= lr.top - 1 && ar.bottom <= lr.bottom + 1;
+  if (visible && !opts.force) return;
+  const target = Math.max(0, (ar.top - lr.top) + list.scrollTop - list.clientHeight * 0.2);
+  if (opts.smooth) animateScrollTop(list, target, 340);
+  else { if (convScrollRAF) { cancelAnimationFrame(convScrollRAF); convScrollRAF = 0; } list.scrollTop = target; }
 }
 
 /* ===================== Archive (recycle bin for deleted conversations) ===================== */
@@ -1344,7 +1406,7 @@ function renderArchive() {
   wrap.appendChild(head);
   arr.forEach(c => {
     const el = document.createElement("div"); el.className = "arch-item";
-    el.innerHTML = '<span class="ci">' + ic("chat", 14) + '</span><span class="title"></span>' +
+    el.innerHTML = '<span class="title"></span>' +
       '<span class="arch-actions"><button class="rest" title="恢复到对话列表">' + ic("undo", 14) + '</button>' +
       '<button class="purge" title="彻底删除">' + ic("x", 14) + '</button></span>';
     el.querySelector(".title").textContent = c.title || "新对话";
@@ -1574,13 +1636,79 @@ function renderMessages() {
   applySearchHighlight();   // highlight + reveal the find bar when a sidebar search is active
 }
 
+/* 应用内图片查看器：暗色遮罩 + 滚轮缩放 + 双击复原 + Esc / 点空白关闭（替代旧的 window.open 空白窗口） */
+let _lb = null, _lbScale = 1;
+function _lbKey(e) { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); closeLightbox(); } }
+function closeLightbox() {
+  if (!_lb) return;
+  const el = _lb; _lb = null;
+  document.removeEventListener("keydown", _lbKey, true);
+  el.classList.remove("show");
+  setTimeout(() => el.remove(), 200);
+}
+function openLightbox(src) {
+  closeLightbox();
+  _lbScale = 1;
+  const ov = document.createElement("div"); ov.id = "lightbox";
+  const img = document.createElement("img"); img.src = src;
+  ov.appendChild(img);
+  ov.onclick = (e) => { if (e.target === ov) closeLightbox(); };
+  img.ondblclick = () => { _lbScale = 1; img.style.transform = ""; };
+  ov.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    _lbScale = Math.min(8, Math.max(0.25, _lbScale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    img.style.transform = "scale(" + _lbScale.toFixed(3) + ")";
+  }, { passive: false });
+  document.addEventListener("keydown", _lbKey, true);   // capture：先于全局 Esc（中断生成）处理
+  document.body.appendChild(ov);
+  _lb = ov;
+  requestAnimationFrame(() => ov.classList.add("show"));
+}
+
+/* 选中回答文字 → 浮出「引用」按钮，一键以引用块填入输入框追问 */
+let _qfab = null;
+function hideQuoteFab() { if (_qfab) _qfab.style.display = "none"; }
+function quoteSelection() {
+  const s = window.getSelection && window.getSelection();
+  const text = s ? s.toString().trim() : "";
+  hideQuoteFab();
+  if (!text) return;
+  const quote = text.split("\n").map(l => "> " + l).join("\n") + "\n\n";
+  const inp = document.getElementById("input");
+  inp.value = quote + inp.value;
+  autoGrow(); inp.focus();
+  inp.setSelectionRange(inp.value.length, inp.value.length);
+  if (s) s.removeAllRanges();
+}
+function maybeShowQuoteFab() {
+  const s = window.getSelection && window.getSelection();
+  if (!s || s.isCollapsed || !s.rangeCount || !s.toString().trim()) { hideQuoteFab(); return; }
+  const node = s.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const cEl = el && el.closest ? el.closest(".msg-content") : null;
+  const rowEl = cEl && cEl.closest(".msg-row");
+  if (!rowEl || !rowEl.classList.contains("msg-assistant")) { hideQuoteFab(); return; }
+  if (!_qfab) {
+    _qfab = document.createElement("button");
+    _qfab.id = "quote-fab"; _qfab.type = "button"; _qfab.textContent = "引用";
+    _qfab.addEventListener("mousedown", (e) => e.preventDefault());   // 不夺焦点、不清选区
+    _qfab.onclick = quoteSelection;
+    document.body.appendChild(_qfab);
+  }
+  const r = s.getRangeAt(0).getBoundingClientRect();
+  if (!r || (!r.width && !r.height)) { hideQuoteFab(); return; }
+  _qfab.style.display = "block";
+  _qfab.style.left = Math.min(window.innerWidth - 64, Math.max(8, r.right - 28)) + "px";
+  _qfab.style.top = Math.min(window.innerHeight - 42, r.bottom + 8) + "px";
+}
+
 function renderAttachments(el, atts) {
   if (!atts || !atts.length) { el.style.display = "none"; return; }
   el.style.display = "flex"; el.innerHTML = "";
   atts.forEach(a => {
     if (a.kind === "image") {
       const im = document.createElement("img"); im.className = "att-img"; im.src = a.dataUrl;
-      im.onclick = () => { const w = window.open(); if (w) w.document.write('<img src="' + a.dataUrl + '" style="max-width:100%">'); };
+      im.onclick = () => openLightbox(a.dataUrl);
       el.appendChild(im);
     } else {
       const chip = document.createElement("div"); chip.className = "att-chip";
@@ -1642,7 +1770,7 @@ function buildMessage(msg, index) {
     row.appendChild(inner); return row;
   }
 
-  if (isUser) { const p = document.createElement("div"); p.style.whiteSpace = "pre-wrap"; p.textContent = msg.content; contentEl.appendChild(p); }
+  if (isUser) { if (msg.content) { const p = document.createElement("div"); p.style.whiteSpace = "pre-wrap"; p.textContent = msg.content; contentEl.appendChild(p); } }
   else if (msg.error) {
     const e = msg.error;
     const wrap = document.createElement("div"); wrap.className = "msg-error";
@@ -1677,6 +1805,7 @@ function buildMessage(msg, index) {
   } else if (msg.error) {
     actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
+    if (msg.stopped) actions.append(mk("send", "继续", "", () => continueGeneration(index)));   // 被中断的回答：从断点接着写
     actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
 
@@ -1851,15 +1980,29 @@ async function processNodeTitleQueue() {
       if (!m || m.role !== "user" || m.nodeTitle) continue;
       const tref = state.settings.defaults.title;
       if (!keyOf(tref)) break;
+      // 这一轮用户只发了图片/文件、没有文字 → 没有可命名的提问文本，改用本轮 LLM 回答来起节点标题。
+      const attachOnly = isAttachmentOnly(m);
+      const answer = attachOnly ? answerAfter(conv, job.userIndex) : null;
+      if (attachOnly && !answer) continue;   // 回答还没就绪 → 先跳过、不标记 tried，等回答完成后下次渲染重排
       nodeTitleTried.add(job.convId + ":" + job.userIndex);
       // Earlier node titles → context, so a follow-up ("继续" / "再展开") gets a meaningful, non-duplicate label.
       const priorTitles = conv.messages.slice(0, job.userIndex)
         .filter(x => x.role === "user" && x.nodeTitle).map(x => x.nodeTitle).slice(-8);
-      let sys = "你是侧栏导航小标题生成器。根据给到的用户消息，提炼其主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
-      let userContent = plainText(m).slice(0, 500);
+      const selfBody = (attachOnly ? (answer.content || "") : plainText(m)).slice(0, 500);
+      const selfLabel = attachOnly ? "助手回答" : "新消息";
+      let sys;
+      if (attachOnly) {
+        sys = priorTitles.length
+          ? "你是侧栏导航小标题生成器。用户这一轮只发了图片/文件、没有文字，下面给你同一对话里【已有的节点标题】和【助手回答】。请据回答提炼这一轮的主题，输出一个极简标题：不超过 5 个词、名词短语、使用回答所用的语言，并与已有标题区分、不重复。禁止比喻、造句、解释、标点、引号。只输出标题本身。"
+          : "你是侧栏导航小标题生成器。用户这一轮只发了图片/文件、没有文字，下面是助手对它的回答。请据回答提炼这一轮的主题，输出一个极简标题：不超过 5 个词、名词短语、使用回答所用的语言。禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+      } else {
+        sys = priorTitles.length
+          ? "你是侧栏导航小标题生成器。会给你同一对话里【已有的节点标题】和一条【新消息】。为新消息提炼主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。若新消息是对前文的延续或追问，请结合语境给出有意义、且能与已有标题区分的标题，不要与已有标题重复。这是起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。"
+          : "你是侧栏导航小标题生成器。根据给到的用户消息，提炼其主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+      }
+      let userContent = selfBody;
       if (priorTitles.length) {
-        sys = "你是侧栏导航小标题生成器。会给你同一对话里【已有的节点标题】和一条【新消息】。为新消息提炼主题，输出一个极简标题：不超过 5 个词、名词短语、使用消息所用的语言。若新消息是对前文的延续或追问，请结合语境给出有意义、且能与已有标题区分的标题，不要与已有标题重复。这是起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。只输出标题本身。";
-        userContent = "【已有节点标题】\n" + priorTitles.map(t => "· " + t).join("\n") + "\n\n【新消息】\n" + plainText(m).slice(0, 500);
+        userContent = "【已有节点标题】\n" + priorTitles.map(t => "· " + t).join("\n") + "\n\n【" + selfLabel + "】\n" + selfBody;
       }
       try {
         const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: userContent }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
@@ -2244,6 +2387,18 @@ function forkConversation(index) {
   toast("已分支到新对话", { label: "回到原对话", fn: () => { state.currentId = srcId; editingIndex = null; save(); renderAll(); } });
 }
 
+// DeepSeek 接口不支持图片（image_url 会直接 400）：发送 / 重答前拦截并给出清晰提示。
+// PDF 不拦——toOpenAIContent 已对不支持的提供方降级为文字说明，不会炸请求。
+function imageBlockFor(ref, conv, extraAtts) {
+  if (!ref || ref.provider !== "deepseek") return false;
+  const hasImg = (l) => (l || []).some(a => a.kind === "image");
+  if (hasImg(extraAtts) || (conv && conv.messages.some(m => hasImg(m.attachments)))) {
+    toast("DeepSeek 模型不支持图片，请更换模型或移除图片后再试");
+    return true;
+  }
+  return false;
+}
+
 async function sendMessage() {
   closeSlash();
   const input = document.getElementById("input");
@@ -2253,6 +2408,7 @@ async function sendMessage() {
   const ref = activeRef();
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  if (imageBlockFor(ref, currentConv(), atts)) return;   // 输入与图片留在原处，便于换模型再发
 
   let conv = currentConv();
   if (!conv) { newConversation(); conv = currentConv(); }
@@ -2269,11 +2425,20 @@ async function runCompletion(conv, opts) {
   const ref = activeRef();
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
+  if (imageBlockFor(ref, conv, null)) return;   // 覆盖重答 / 继续：整段历史会一并发出，含图历史同样拦截
   conv.model = clone(ref);
   // Regenerate in place (keep the following turns) when given a target index; otherwise append a new turn.
   const at = (opts && typeof opts.regenAt === "number" && conv.messages[opts.regenAt] && conv.messages[opts.regenAt].role === "assistant") ? opts.regenAt : null;
-  let targetIndex;
-  if (at != null) {
+  // 继续生成：保留这条回答已有的内容，从中断处接着写（不清空、不新建）。
+  const cont = (at == null && opts && typeof opts.continueAt === "number" && conv.messages[opts.continueAt] && conv.messages[opts.continueAt].role === "assistant") ? opts.continueAt : null;
+  let targetIndex, contBase = "";
+  if (cont != null) {
+    const tg = conv.messages[cont];
+    tg.content = (tg.content || "").replace(/\s*_（已停止(?:生成)?）_\s*$/, "");   // 去掉中断标记，正文保留
+    contBase = tg.content;
+    delete tg.error;
+    targetIndex = cont;
+  } else if (at != null) {
     const tg = conv.messages[at];
     tg.content = ""; tg.reasoning = ""; delete tg.usage; delete tg.error;
     targetIndex = at;
@@ -2281,27 +2446,29 @@ async function runCompletion(conv, opts) {
     conv.messages.push({ role: "assistant", content: "" });
     targetIndex = conv.messages.length - 1;
   }
-  // A fresh user send is "restorable": Esc returns the prompt to the input box (not regenerate).
+  // A fresh user send arms "undo": after Esc stops it, a SECOND Esc returns the prompt (+attachments) to the box.
+  undoSend = null;   // a new turn invalidates any pending undo from a previous stop
   const um = conv.messages[targetIndex - 1];
   restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
     ? { text: um.content || "", attachments: Array.isArray(um.attachments) ? um.attachments.slice() : [] } : null;
   pinTop = null; autoScroll = false; nodePinned = null;   // the pin (below) drives the streaming scroll
   selPointerDown = false;   // clear any stuck selection-press flag from a prior turn (safety; mouseup normally clears it)
   save(); renderMessages(); renderSidebar();
+  if (opts && opts.restorable) revealActiveConv({ smooth: true });   // 新发 prompt：当前对话不在可视区时，平滑滚到列表距顶 ~20%
 
   const box = document.getElementById("messages");
-  const row = (at != null) ? box.querySelector('.msg-row[data-index="' + targetIndex + '"]') : box.lastElementChild;
+  const row = (at != null || cont != null) ? box.querySelector('.msg-row[data-index="' + targetIndex + '"]') : box.lastElementChild;
   if (!row) { setSending(false); return; }
   const contentEl = row.querySelector(".msg-body > .msg-content");
   const reasoningWrap = row.querySelector(".reasoning");
   const reasoningBody = row.querySelector(".reasoning-body");
-  renderAnswer(contentEl, "", true);
+  renderAnswer(contentEl, cont != null ? renderMarkdown(contBase) : "", true);
 
   // Auto-scroll the streaming reply, but STOP once the user's prompt reaches ~20% from the top (it stays
   // visible with the answer filling in below it). Start at the bottom — no jarring jump — and let
   // applyAutoScroll ease toward min(pinTop, maxScroll): follows the bottom until the prompt hits 20%, then holds.
   box.classList.add("streaming");
-  if (at == null) {
+  if (at == null && cont == null) {
     let ur = row ? row.previousElementSibling : null;
     while (ur && !ur.classList.contains("msg-row")) ur = ur.previousElementSibling;
     pinTop = ur ? Math.max(0, ur.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
@@ -2314,7 +2481,11 @@ async function runCompletion(conv, opts) {
   if (conv.webSearch && ref.provider !== "openrouter") toast("联网搜索目前仅 OpenRouter 模型支持，本次未联网");
 
   const d = state.settings.defaults;
-  let history = conv.messages.slice(0, at != null ? at : -1).map(m => ({ role: m.role, content: m.content, attachments: m.attachments, reasoning: m.reasoning }));
+  let history = conv.messages.slice(0, cont != null ? cont : (at != null ? at : -1)).map(m => ({ role: m.role, content: m.content, attachments: m.attachments, reasoning: m.reasoning }));
+  if (cont != null) {   // 继续生成：带上已有的半截回答 + 一条仅本次请求用的「继续」指令（不入库、不显示）
+    history.push({ role: "assistant", content: contBase });
+    history.push({ role: "user", content: "继续。直接从上文的中断处接着输出剩余内容，不要重复已输出的部分，不要重新开头，也不要加任何说明。" });
+  }
   let system = activePromptText(conv);
   if (conv.compaction && conv.compaction.summary) {
     const cut = Math.min(conv.compaction.count, history.length);
@@ -2343,7 +2514,7 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ renderAnswer(contentEl, renderMarkdown(t), true); enhanceCode(box); applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ renderAnswer(contentEl, renderMarkdown(cont != null ? contBase + t : t), true); enhanceCode(contentEl); /* 只扫当前这条消息——长对话里每个 chunk 扫全文会卡 */ applyAutoScroll(box); },
       onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); enhanceCode(reasoningBody); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（markdown/公式 renderMarkdown 已内联渲染） */ applyAutoScroll(box); },
     });
     acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
@@ -2358,23 +2529,26 @@ async function runCompletion(conv, opts) {
   cancelSmooth();
   setSending(false); abortController = null;
 
-  // Esc on a fresh send → discard this turn and return the prompt (and attachments) to the input box.
-  if (aborted && restoreOnAbort) {
-    const r0 = restoreOnAbort; restoreOnAbort = null; pinTop = null;
-    conv.messages.pop();   // assistant placeholder
-    if (conv.messages.length && conv.messages[conv.messages.length - 1].role === "user") conv.messages.pop();
-    if (conv.messages.length === 0) { conv.title = "新对话"; conv.titled = false; }
-    save(); renderMessages(); renderSidebar();
-    const inp = document.getElementById("input");
-    inp.value = r0.text; autoGrow();
-    pending = r0.attachments || []; renderPending(); inp.focus();
-    return;
-  }
+  // 第一次 Esc 已停止生成；若这是一次「全新发送」，记下它，让「再按一次 Esc」可整轮撤销、prompt（+附件）退回输入框。
+  const freshSend = (aborted && restoreOnAbort) ? restoreOnAbort : null;
   restoreOnAbort = null;
 
   const last = conv.messages[targetIndex];
-  last.content = acc; if (racc) last.reasoning = racc; if (usage) last.usage = usage;
+  last.content = (cont != null ? contBase : "") + acc;
+  if (racc) last.reasoning = (cont != null && last.reasoning) ? (last.reasoning + "\n\n" + racc) : racc;
+  if (usage) {   // 继续生成：两段用量合并计入这条消息（费用累加）
+    const ou = (cont != null) ? last.usage : null;
+    last.usage = ou ? {
+      prompt_tokens: (ou.prompt_tokens || 0) + (usage.prompt_tokens || 0),
+      completion_tokens: (ou.completion_tokens || 0) + (usage.completion_tokens || 0),
+      cost: (ou.cost != null || usage.cost != null) ? ((ou.cost || 0) + (usage.cost || 0)) : undefined,
+    } : usage;
+  }
   if (errInfo) last.error = errInfo; else delete last.error;   // structured error → inline error block + 重试
+  if (aborted) {
+    last.stopped = true;   // 被中断的回答 → 操作栏出现「继续」
+    if (freshSend) undoSend = { convId: conv.id, msgIndex: targetIndex, prompt: freshSend.text || "", attachments: (freshSend.attachments || []).slice() };
+  } else if (!errInfo) delete last.stopped;
   // if this turn was a regenerate / edit-resend, keep the previous answer(s) as switchable variants
   if (!errInfo && opts && Array.isArray(opts.carryVariants) && opts.carryVariants.length) {
     let ui = targetIndex - 1; while (ui >= 0 && conv.messages[ui].role !== "user") ui--;
@@ -2392,10 +2566,52 @@ async function runCompletion(conv, opts) {
   const keepTop = box.scrollTop;
   const wasFollowing = autoScroll;
   pinTop = null;
+  // renderSidebar 会因 innerHTML 重建把侧栏滚动弹回顶部；最后这次 render 保住其滚动位置（保留发送时的定位、不抖回顶部）。
+  const convList = document.getElementById("conv-list");
+  const sbKeep = convList ? convList.scrollTop : null;
   renderMessages(); renderSidebar();
+  if (sbKeep != null) convList.scrollTop = sbKeep;
   box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
   lastSetTop = box.scrollTop;
   updateScrollBtn();
+  updateComposerToggles();   // 刷新压缩按钮上的上下文用量提示
+  // 首轮只发了附件时，标题在发送时被延后（那时回答还不存在）；此刻回答已就绪，补一次对话命名（由回答生成）。
+  if (!conv.titled) maybeTitle(conv);
+}
+
+// 「再按一次 Esc」撤销：仅当当前对话末尾仍是刚才那条「已停止的全新发送」、且输入框为空（用户还没打新内容）时有效。
+function canUndoSend() {
+  if (!undoSend) return false;
+  const inp = document.getElementById("input");
+  if (inp && inp.value.trim()) return false;             // 用户已在打新内容 → 不覆盖
+  const conv = currentConv();
+  if (!conv || conv.id !== undoSend.convId) return false;
+  const ai = undoSend.msgIndex;
+  if (ai !== conv.messages.length - 1) return false;     // 必须仍是最后一轮
+  const a = conv.messages[ai], u = conv.messages[ai - 1];
+  return !!(a && a.role === "assistant" && a.stopped && u && u.role === "user");
+}
+function undoLastSend() {
+  if (!canUndoSend()) { undoSend = null; return; }
+  const u = undoSend; undoSend = null;
+  const conv = currentConv();
+  conv.messages.pop();   // 已停止的回答
+  conv.messages.pop();   // 对应的用户消息
+  if (conv.messages.length === 0) { conv.title = "新对话"; conv.titled = false; }
+  save(); renderMessages(); renderSidebar();
+  const inp = document.getElementById("input");
+  inp.value = u.prompt || ""; autoGrow();
+  pending = (u.attachments || []).slice(); renderPending(); inp.focus();
+  toast("已撤销发送，提示词退回输入框");
+}
+
+// 「继续」：被中断（已停止）的回答从中断处接着生成，保留已有内容，两段用量合并。
+function continueGeneration(index) {
+  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  const conv = currentConv(); if (!conv) return;
+  const m = conv.messages[index];
+  if (!m || m.role !== "assistant") return;
+  runCompletion(conv, { continueAt: index });
 }
 
 // Update only the header title (+ hover tooltip) for the current conversation, WITHOUT rebuilding
@@ -2431,6 +2647,20 @@ async function maybeTitle(conv) {
   if (!prompts.length) return;
 
   if (!conv.titled) {
+    // 用户开场就只发了图片/文件、没有文字 → 没有可命名的提问文本，改由本轮 LLM 回答来起对话标题。
+    const first = prompts[0];
+    if (isAttachmentOnly(first)) {
+      const ans = answerAfter(conv, conv.messages.indexOf(first));
+      if (!ans) return;   // 本轮回答还没就绪 → 暂不命名（保持 titled=false），回答完成后由 runCompletion 再次调用
+      const sys = "你是对话标题生成器。用户开场只发了图片/文件、没有文字，下面是助手对它的回答。请据回答提炼整个对话的主题，输出一个简短标题：不超过 6 个词、名词短语、使用回答所用的语言。禁止比喻、造句、解释、标点、引号。只输出标题本身。";
+      conv.titled = true; save();
+      try {
+        const r = await streamChat(tref, { system: sys, messages: [{ role: "user", content: (ans.content || "").slice(0, 800) }] }, { temp: 0.3, maxTokens: 256, reasoning: false });
+        const t = cleanTitle(r.text);
+        if (t) { conv.title = t; save(); renderSidebar(); refreshHeaderTitle(conv); }
+      } catch (e) {}
+      return;
+    }
     const sys = "你是对话标题生成器。根据给到的用户消息，提炼其主题，输出一个简短标题：不超过 6 个词、名词短语、使用消息所用的语言。这是给这条消息起标题，不是回答或执行其中的请求；禁止比喻、造句、解释、标点、引号。例如消息为「用比喻解释相对论」时应输出「相对论 通俗解释」，而不是某个比喻。只输出标题本身。";
     conv.titled = true; save();
     try {
@@ -2545,6 +2775,8 @@ function setSending(sending) {
   const btn = document.getElementById("send");
   if (sending) { btn.classList.add("stop"); btn.innerHTML = ic("stop", 16); btn.title = "停止"; }
   else { btn.classList.remove("stop"); btn.innerHTML = ic("send", 18); btn.title = "发送"; }
+  const rt = document.getElementById("retitle-chat");
+  if (rt) rt.disabled = !!sending;   // AI 回答 / 压缩进行中：禁用「重新生成标题」，避免和正文生成抢占
 }
 
 /* ===================== Model picker popover (keyboard-navigable) ===================== */
@@ -2632,8 +2864,13 @@ function updateModelPill() {
 function updatePromptPill() {
   const pill = document.getElementById("prompt-pill"); if (!pill) return;
   const p = promptById(activePromptId());
-  pill.textContent = p ? p.name : "无提示词";
+  const name = p ? p.name : "无提示词";
+  pill.innerHTML = "";
+  const label = document.createElement("span"); label.className = "pp-label"; label.textContent = name;
+  pill.appendChild(label);   // 文字放进内层 span：渐隐 mask 只作用于文字，不波及 pill 的 hover 底色
   pill.dataset.tip = p ? ("系统提示词：" + p.name + "（点击切换）") : "未使用系统提示词（点击切换）";
+  // 名称真正溢出时才右侧透明渐隐（短名字到不了右边缘，不会被淡出），判定同顶栏标题
+  label.classList.toggle("faded", label.scrollWidth > label.clientWidth + 1);
 }
 let promptPop = { open: false, index: 0, ids: [] }; // keyboard-navigable, ids[i] = prompt id or null
 function buildPromptPopover() {
@@ -2836,6 +3073,59 @@ async function importAllData() {
     setTimeout(() => location.reload(), 600);
   } catch (e) { toast("导入失败：" + e.message); }
 }
+// ---- 从自动备份恢复（设置 → 数据）----
+async function fillBackupList() {
+  const sel = document.getElementById("set-backup-sel"); if (!sel) return;
+  const btn = document.getElementById("set-backup-restore");
+  sel.innerHTML = "";
+  let items = [];
+  try { items = (window.chatbox && window.chatbox.listBackups) ? (await window.chatbox.listBackups() || []) : []; } catch (e) {}
+  if (!items.length) {
+    const o = document.createElement("option"); o.value = ""; o.textContent = "暂无自动备份"; sel.appendChild(o);
+    sel.disabled = true; if (btn) btn.disabled = true;
+    return;
+  }
+  sel.disabled = false; if (btn) btn.disabled = false;
+  const pad = (x) => String(x).padStart(2, "0");
+  items.forEach(it => {
+    const d = new Date(it.mtime);
+    const o = document.createElement("option");
+    o.value = it.name;
+    o.textContent = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + " · " + Math.max(1, Math.round(it.size / 1024)) + " KB";
+    sel.appendChild(o);
+  });
+}
+async function restoreBackup() {
+  const sel = document.getElementById("set-backup-sel");
+  const name = sel && sel.value; if (!name) return;
+  let res;
+  try { res = await window.chatbox.readBackup(name); } catch (e) { toast("读取备份失败：" + e.message); return; }
+  if (!res || !res.ok) { toast("读取备份失败：" + ((res && res.error) || "未知错误")); return; }
+  let data; try { data = JSON.parse(res.json); } catch (e) { toast("备份文件已损坏"); return; }
+  const incoming = (data && data.state && data.state.settings) ? data.state : null;
+  if (!incoming || !incoming.settings || !incoming.settings.providers) { toast("不是有效的 Quartz 备份"); return; }
+  const nConv = (incoming.conversations || []).length, nArch = (incoming.archived || []).length;
+  const ok = await confirmDialog({
+    title: "从自动备份恢复",
+    body: `将恢复 ${nConv} 个对话、${nArch} 个已归档，并覆盖当前的全部对话与设置。自动备份不含 API Key，现有 Key 会保留。此操作不可撤销，确定继续？`,
+    okText: "恢复", danger: true,
+  });
+  if (!ok) return;
+  try {
+    const ns = ensureShape(incoming);
+    // 自动备份写入时剥掉了 API Key —— 恢复时把当前已配置的 Key 带回去
+    for (const pk of Object.keys((state.settings && state.settings.providers) || {})) {
+      const cur = state.settings.providers[pk];
+      if (cur && cur.key) {
+        ns.settings.providers[pk] = ns.settings.providers[pk] || {};
+        if (!ns.settings.providers[pk].key) ns.settings.providers[pk].key = cur.key;
+      }
+    }
+    await persist(ns);
+    toast("恢复成功，正在重新加载…");
+    setTimeout(() => location.reload(), 600);
+  } catch (e) { toast("恢复失败：" + e.message); }
+}
 // The quick-bar model picker: a "follow default" option plus every enabled model.
 function populateQuickModelSelect() {
   const sel = document.getElementById("set-quick-model"); if (!sel) return;
@@ -2983,6 +3273,8 @@ function fillSettings() {
   // general
   const g = state.settings.general || {};
   setToggle("set-restorelast-tog", g.restoreLast !== false);
+  setSeg("set-sidebarsort-seg", g.sidebarSort === "created" ? "created" : "updated");
+  fillBackupList();   // 数据页的「从自动备份恢复」下拉（异步填充）
   if (window.chatbox && window.chatbox.getAutoUpdate) window.chatbox.getAutoUpdate().then(on => setToggle("set-autoupdate-tog", on)).catch(() => {});   // reflect the main-process auto-update flag
 }
 
@@ -3099,6 +3391,7 @@ function setupSettingsLive() {
   // ---- general ----
   bindToggle("set-autoupdate-tog", on => { if (window.chatbox && window.chatbox.setAutoUpdate) window.chatbox.setAutoUpdate(on); });
   bindToggle("set-restorelast-tog", on => { state.settings.general.restoreLast = on; save(); });
+  bindSeg("set-sidebarsort-seg", v => { state.settings.general.sidebarSort = (v === "created") ? "created" : "updated"; save(); renderSidebar(); });
   { const sg = document.getElementById("set-show-guide"); if (sg) sg.onclick = openGuide; }
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
@@ -3468,7 +3761,7 @@ function guideSlides() {
     { t: "系统提示词", d: "输入框左下角的「提示词」可一键切换不同风格的人设；在 设置 → 系统提示词 里编辑或新增你自己的。", img: "prompt" },
     { t: "思考强度", d: "输入框右下角的灯泡，点按在 关 / 低 / 中 / 高 之间切换——需要深思时让模型多想，日常问答则更快更省。", img: "think" },
     { t: "节点小地图", d: "长对话左侧的竖条是一张迷你导航图，点任意节点即可跳到那一轮；每个节点的小标题由 AI 自动生成。", img: "nodes" },
-    { t: "顺手快捷键", d: kb(cl) + " 回到输入框 · " + kb(cn) + " 新对话 · 输入 " + kb("/") + " 唤出命令面板 · 全局 " + kb(om) + " 把 Quartz 唤到最前。", img: "keys" },
+    { t: "顺手快捷键", d: kb(cl) + " 回到输入框 · " + kb(cn) + " 新对话 · 输入 " + kb("/") + " 唤出命令面板 · 全局 " + kb(om) + " 把 Quartz 唤到最前。<br><br>回答生成时按 " + kb("Esc") + " 停止，已写出的内容会保留（操作栏的「继续」可接着写）；停下后再按一次 " + kb("Esc") + " 撤销本次发送，提示词退回输入框。", img: "keys" },
     { t: "多模型 · 联网", d: "点底部模型名随时切换；同一个问题可用不同模型重答对比。用 OpenRouter 模型时还能点地球开启实时联网检索。", img: "models" },
   ];
 }
@@ -3625,7 +3918,8 @@ document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "moda
 document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.onclick = () => switchSection(b.dataset.sec));
 bindSettingsSearch();
 { const de = document.getElementById("data-export"); if (de) de.onclick = exportAllData;
-  const di = document.getElementById("data-import"); if (di) di.onclick = importAllData; }
+  const di = document.getElementById("data-import"); if (di) di.onclick = importAllData;
+  const br = document.getElementById("set-backup-restore"); if (br) br.onclick = restoreBackup; }
 setupSettingsLive();
 // custom confirm dialog
 document.getElementById("cf-ok").onclick = () => closeConfirm(true);
@@ -3698,8 +3992,9 @@ input.addEventListener("keydown", (e) => {
     if (e.key === "ArrowUp") { e.preventDefault(); movePrompt(-1); return; }
     if (e.key === "Escape") { e.preventDefault(); closePromptPop(); return; }
   }
-  // Esc while answering → stop generation (a fresh send also returns the prompt to the box)
+  // Esc 正在生成 → 第一次停止（保留半截回答，操作栏出现「继续」）；停止后再按一次 Esc → 撤销这次「全新发送」，prompt 退回输入框
   if (e.key === "Escape" && abortController) { e.preventDefault(); abortController.abort(); return; }
+  if (e.key === "Escape" && !abortController && canUndoSend()) { e.preventDefault(); undoLastSend(); return; }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!abortController) sendMessage(); }
 });
 input.addEventListener("paste", async (e) => {
@@ -3734,6 +4029,10 @@ messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = n
 // so the selection's anchor node isn't replaced mid-drag (which would snap the selection to the top). See onDelta.
 messagesBox.addEventListener("mousedown", () => { selPointerDown = true; });
 document.addEventListener("mouseup", () => { selPointerDown = false; });
+// 选中回答文字后浮出「引用」；点别处 / 滚动即收起（mouseup 后下一拍再测，让选区先定型）
+document.addEventListener("mouseup", (e) => { if (_qfab && e.target === _qfab) return; setTimeout(maybeShowQuoteFab, 0); });
+document.addEventListener("mousedown", (e) => { if (_qfab && e.target === _qfab) return; hideQuoteFab(); });
+messagesBox.addEventListener("scroll", hideQuoteFab);
 // Tap the floating ↓ to jump to the bottom and resume following the stream.
 const _scrollBtn = document.getElementById("scroll-btn");
 if (_scrollBtn) _scrollBtn.addEventListener("click", () => {
@@ -3860,6 +4159,7 @@ if (window.chatbox && window.chatbox.onQuickShortcutResult) {
 }
 // Auto-update notice — lives at the SIDEBAR BOTTOM and replaces the 已归档 area while an update is
 // pending (no separate floating box). Routine launch "checking" is ignored so it doesn't flicker.
+let dismissedUpdate = "";   // 本会话内被用户从角落关掉的更新版本（仅压制角标，不写持久"忽略"、不影响设置里的检查/更新）
 function renderUpdatePill(s) {
   const notice = document.getElementById("update-notice");
   const footer = document.getElementById("sidebar-footer");
@@ -3868,7 +4168,8 @@ function renderUpdatePill(s) {
   const xbtn = notice.querySelector(".upd-x"), bar = notice.querySelector(".upd-bar");
   const barFill = bar && bar.querySelector("i");
   const st = s && s.state, v = (s && s.version) ? (" " + s.version) : "";
-  const show = st === "ready" || st === "downloading" || st === "error" || st === "available";
+  let show = st === "ready" || st === "downloading" || st === "error" || st === "available";
+  if (show && s && s.version && s.version === dismissedUpdate) show = false;   // 用户在角落关过这个版本 → 本会话不再弹（设置里仍照常显示、可更新）
   notice.hidden = !show;
   if (footer) footer.classList.toggle("has-update", show);   // hide 已归档, show the notice in its place
   if (show) {
@@ -3880,7 +4181,7 @@ function renderUpdatePill(s) {
     else if (st === "error") { notice.className = "err"; text = "更新失败 · 前往下载"; if (main) main.onclick = () => window.chatbox.updateAction("page"); }
     else if (st === "available") { notice.className = "ready"; text = "有新版本" + v; if (main) main.onclick = () => window.chatbox.updateAction("install"); }
     if (txt) txt.textContent = text;
-    if (xbtn) xbtn.onclick = (e) => { e.stopPropagation(); window.chatbox.updateAction("ignore"); };
+    if (xbtn) xbtn.onclick = (e) => { e.stopPropagation(); dismissedUpdate = (s && s.version) || ""; notice.hidden = true; if (footer) footer.classList.remove("has-update"); };
   }
   updateAboutUpdateStatus(s);
 }
@@ -3895,7 +4196,6 @@ function updateAboutUpdateStatus(s) {
     st === "ready" ? ("已下载" + v + "，重启即可更新") :
     st === "available" ? ("发现新版本" + v) :
     st === "error" ? "检查或下载失败，请稍后重试" :
-    (st === "none" && s.ignored) ? "已忽略此版本" :
     st === "none" ? "已是最新版本" :
     st === "dev" ? "开发模式不检查更新" : "";
   if (btn) {                                  // download done (or available) → offer to restart & apply
