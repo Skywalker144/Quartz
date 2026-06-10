@@ -1611,6 +1611,7 @@ function renderMessages() {
       const tokStr = fmtTok(t.pt + t.ct) + " tok";
       costPill.textContent = t.cost > 0 ? (fmtCost(t.cost) + " · " + tokStr) : tokStr;
       costPill.title = "本轮对话累计：输入 " + fmtTok(t.pt) + " tok，输出 " + fmtTok(t.ct) + " tok" + (t.cost > 0 ? "，花费 " + fmtCostExact(t.cost) : "（该提供方未返回费用）");
+      costPill.dataset.tipDelay = "600";
     } else costPill.style.display = "none";
   } else costPill.style.display = "none";
 
@@ -1828,7 +1829,7 @@ function buildMessage(msg, index) {
   if (!isUser && msg.usage) {
     const u = msg.usage; const tot = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
     usageEl.textContent = fmtTok(u.prompt_tokens) + " ↑ + " + fmtTok(u.completion_tokens) + " ↓ = " + fmtTok(tot) + " tok" + (u.cost != null ? " · " + fmtCost(u.cost) : "");
-    if (u.cost != null && u.cost > 0) usageEl.title = "花费 " + fmtCostExact(u.cost); else usageEl.removeAttribute("title");
+    if (u.cost != null && u.cost > 0) { usageEl.title = "花费 " + fmtCostExact(u.cost); usageEl.dataset.tipDelay = "600"; } else usageEl.removeAttribute("title");
   }
   row.appendChild(inner); return row;
 }
@@ -1905,7 +1906,7 @@ function renderNodemap() {
   const conv = currentConv();
   bars.innerHTML = ""; panel.innerHTML = ""; nodeUserIndices = [];
   const users = conv ? conv.messages.map((m, i) => ({ m, i })).filter(x => x.m.role === "user") : [];
-  if (!users.length) { wrap.style.display = "none"; return; }
+  if (users.length < 2) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
   users.forEach(({ m, i }) => {
     nodeUserIndices.push(i);
@@ -3629,7 +3630,7 @@ function msModelRow(pk, m) {
   // prefer a real provider-supplied name; otherwise auto-generate from the id (recommended chips pass name===id)
   const disp = (m.name && m.name !== m.id) ? m.name : prettyModel(m.id, pk);
   const nm = document.createElement("span"); nm.className = "or-name"; nm.textContent = disp; main.appendChild(nm);
-  if (disp !== m.id) main.dataset.tip = m.id;   // show only the short name; reveal the full model id on hover
+  if (disp !== m.id) { main.dataset.tip = m.id; main.dataset.tipDelay = "600"; }
   row.append(cb, main);
   if (pk === "openrouter") { const meta = document.createElement("span"); meta.className = "or-meta"; meta.innerHTML = orBadges(m); row.appendChild(meta); }
   return row;
@@ -4050,15 +4051,14 @@ document.addEventListener("mouseup", () => { if (resizing) { resizing = false; d
 
 // Reading width lives in 设置 → 外观（the old top-bar width pill was removed）。
 
-/* ----- Instant tooltips for [data-tip] controls (native title has a ~1s delay) ----- */
-(function setupInstantTips() {
-  let tipEl = null, tipFor = null;
+/* ----- Tooltips for [data-tip] / [title] controls ----- */
+(function setupTips() {
+  let tipEl = null, tipFor = null, tipTimer = null;
+  var TIP_DELAY = 380;
   function ensure() {
     if (!tipEl) { tipEl = document.createElement("div"); tipEl.id = "cb-tip"; tipEl.setAttribute("role", "tooltip"); document.body.appendChild(tipEl); }
     return tipEl;
   }
-  // tip text comes from data-tip, OR a native title — which we hijack (stash + remove) so the slow
-  // built-in tooltip never appears; restore() puts it back when the pointer leaves.
   function textFor(el) {
     if (el.dataset.tip) return el.dataset.tip;
     if (el.hasAttribute("title")) { el.dataset.tipTitle = el.getAttribute("title"); el.removeAttribute("title"); }
@@ -4072,31 +4072,34 @@ document.addEventListener("mouseup", () => { if (resizing) { resizing = false; d
     const t = ensure(); t.textContent = text; t.style.display = "block";
     const r = el.getBoundingClientRect(); const tr = t.getBoundingClientRect();
     const above = r.top - tr.height - 7;
-    const top = above >= 6 ? above : r.bottom + 7;   // above if there's room, else below (header buttons)
-    // On Windows/Linux the native min/max/close buttons are a "window-controls overlay" painted
-    // ABOVE all web content — no z-index can sit over them. If a tooltip near the top would slide
-    // under that caption-button strip, pull its right edge clear so it isn't clipped.
+    const top = above >= 6 ? above : r.bottom + 7;
     let rightLimit = window.innerWidth - 8;
     const wco = navigator.windowControlsOverlay;
     if (wco && wco.visible) {
-      let capLeft = window.innerWidth - 140, capBottom = 48;   // fallback if the rect API is unavailable
+      let capLeft = window.innerWidth - 140, capBottom = 48;
       try { const bar = wco.getTitlebarAreaRect(); if (bar && bar.width > 0) { capLeft = bar.x + bar.width; capBottom = bar.y + bar.height; } } catch (e) {}
-      if (top < capBottom) rightLimit = Math.min(rightLimit, capLeft - 8);   // tooltip sits in the caption band
+      if (top < capBottom) rightLimit = Math.min(rightLimit, capLeft - 8);
     }
     let left = r.left + r.width / 2 - tr.width / 2;
     left = Math.max(8, Math.min(left, rightLimit - tr.width));
     t.style.left = Math.round(left) + "px";
     t.style.top = Math.round(top) + "px";
   }
-  function hide() { if (tipEl) tipEl.style.display = "none"; if (tipFor) restore(tipFor); tipFor = null; }
+  function cancelTimer() { if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; } }
+  function hide() { cancelTimer(); if (tipEl) tipEl.style.display = "none"; if (tipFor) restore(tipFor); tipFor = null; }
   document.addEventListener("mouseover", (e) => {
     const el = e.target.closest && e.target.closest("[data-tip],[title]");
-    if (el && el !== tipFor) { if (tipFor) restore(tipFor); tipFor = el; show(el); }
+    if (el && el !== tipFor) {
+      cancelTimer(); if (tipFor) restore(tipFor); tipFor = el;
+      textFor(el);
+      var d = el.dataset.tipDelay != null ? +el.dataset.tipDelay : TIP_DELAY;
+      if (d <= 0) { show(el); } else { tipTimer = setTimeout(function () { tipTimer = null; if (tipFor === el) show(el); }, d); }
+    }
   });
   document.addEventListener("mouseout", (e) => {
     if (tipFor && !tipFor.contains(e.relatedTarget)) hide();
   });
-  document.addEventListener("mousedown", hide, true);   // dismiss when clicking (e.g. opening a popover)
+  document.addEventListener("mousedown", hide, true);
   window.addEventListener("blur", hide);
 })();
 
