@@ -48,6 +48,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # ad-hoc sign (no Apple/Win cert)
         run: npx electron-builder ${{ matrix.args }} --publish always
 
