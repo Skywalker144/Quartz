@@ -1858,15 +1858,61 @@ function compactionMarker(conv) {
 const LANG_LABELS = { js: "JavaScript", jsx: "JSX", mjs: "JavaScript", ts: "TypeScript", tsx: "TSX", py: "Python", python: "Python", rb: "Ruby", ruby: "Ruby", go: "Go", golang: "Go", rs: "Rust", rust: "Rust", java: "Java", kt: "Kotlin", kotlin: "Kotlin", swift: "Swift", c: "C", cpp: "C++", "c++": "C++", cc: "C++", cs: "C#", "c#": "C#", csharp: "C#", php: "PHP", sh: "Shell", bash: "Bash", zsh: "Zsh", shell: "Shell", console: "Shell", ps1: "PowerShell", powershell: "PowerShell", sql: "SQL", json: "JSON", jsonc: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", xml: "XML", html: "HTML", htm: "HTML", css: "CSS", scss: "SCSS", sass: "Sass", less: "Less", md: "Markdown", markdown: "Markdown", tex: "TeX", latex: "LaTeX", dockerfile: "Dockerfile", docker: "Dockerfile", makefile: "Makefile", make: "Makefile", cmake: "CMake", r: "R", lua: "Lua", dart: "Dart", scala: "Scala", clj: "Clojure", ex: "Elixir", exs: "Elixir", erl: "Erlang", hs: "Haskell", pl: "Perl", perl: "Perl", objc: "Objective-C", vue: "Vue", svelte: "Svelte", graphql: "GraphQL", gql: "GraphQL", proto: "Protobuf", ini: "INI", diff: "Diff", patch: "Diff", vim: "Vim", text: "Text", txt: "Text", plaintext: "Text", plain: "Text" };
 function langLabel(lang) { if (!lang) return "code"; return LANG_LABELS[lang.toLowerCase()] || lang; }
 
+/* ---- Bare-formula rescue ----
+   Some models dump a formula into an unlabeled ``` fence instead of $$…$$. We detect a no-language block
+   that is clearly LaTeX (a math command or x^{…}/a_{…}, and no code markers) and render it as math.
+   Biased hard toward leaving things alone: a missed formula just stays a code block (status quo), but a
+   real code block must never be mangled into KaTeX — so the math signal requires a backslash command. */
+const MATH_CMD = /\\(frac|dfrac|tfrac|sqrt|sum|prod|coprod|int|iint|iiint|oint|lim|limsup|liminf|infty|partial|nabla|cdot|times|div|pm|mp|ast|star|circ|leq|geq|neq|approx|equiv|cong|sim|simeq|propto|subset|subseteq|supset|supseteq|cup|cap|setminus|emptyset|forall|exists|nexists|neg|land|lor|implies|iff|to|gets|rightarrow|Rightarrow|leftarrow|Leftarrow|leftrightarrow|longrightarrow|mapsto|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|mathbb|mathcal|mathrm|mathbf|mathfrak|boldsymbol|operatorname|left|right|begin|end|hat|widehat|vec|bar|tilde|widetilde|overline|underline|overrightarrow|binom|dbinom|langle|rangle|lfloor|rfloor|lceil|rceil|cdots|ldots|vdots|ddots|dots|prime|oplus|ominus|otimes|odot|wedge|vee|perp|parallel|angle|triangle|square|because|therefore|quad|qquad)(?![a-zA-Z])/;
+const MATH_BRACE = /[\^_]\{/;   // x^{…} / a_{…} — almost exclusively math (rare in code, never in prose)
+const CODE_SIG = /\/\/|\/\*|\*\/|=>|;\s*(\n|$)|&&|\|\||==|!=|::|\bfunction\b|\breturn\b|\bconsole\b|\bimport\b|\bexport\b|\bprintf\b|\bdef\s|\bclass\s|#include|System\.out/;
+function looksLikeMath(s) {
+  s = (s || "").trim();
+  if (!s || s.length > 1200) return false;            // huge blocks are almost never a lone formula
+  if (CODE_SIG.test(s)) return false;
+  return MATH_CMD.test(s) || MATH_BRACE.test(s);
+}
+function renderTeX(tex, display) {
+  if (!window.katex) return null;
+  try { return katex.renderToString(tex, { displayMode: !!display, throwOnError: false }); }
+  catch (e) { return null; }
+}
+// Render a bare fence's text as one or more display-math rows (one per non-blank line). null → leave as code.
+function mathFromBare(raw) {
+  if (!window.katex) return null;
+  const lines = (raw || "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  let out = "";
+  for (const ln of lines) { const h = renderTeX(ln, true); if (h == null) return null; out += '<div class="math-block">' + h + "</div>"; }
+  return out;
+}
+
 function enhanceCode(scope) {
+  // Capture each fence's EXPLICIT language (from the ``` info string, set by marked as `language-xxx`)
+  // BEFORE hljs runs — auto-highlight overwrites the class with its best guess, and an unlabeled fence
+  // (e.g. an LLM dumping a bare formula) would otherwise get mislabeled "INI" / "Perl". No tag → "code".
+  scope.querySelectorAll("pre > code").forEach(code => {
+    if (code.dataset.lang == null) { const m = (code.className || "").match(/\blanguage-([\w+#.-]+)/i); code.dataset.lang = m ? m[1] : ""; }
+  });
+  // Rescue bare formulas: an unlabeled fence that is clearly LaTeX becomes math, not a code block.
+  scope.querySelectorAll("pre > code").forEach(code => {
+    const pre = code.parentElement;
+    if (!pre || code.dataset.lang) return;                                   // only no-language fences
+    if (pre.parentElement && pre.parentElement.classList.contains("code-block")) return;
+    const raw = code.textContent || "";
+    if (!looksLikeMath(raw)) return;
+    const html = mathFromBare(raw);
+    if (html == null) return;                                                // KaTeX unavailable / failed → keep as code
+    const div = document.createElement("div"); div.className = "math-bare"; div.innerHTML = html;
+    pre.replaceWith(div);
+  });
   if (window.hljs) scope.querySelectorAll("pre > code").forEach(code => {
     if (!code.dataset.highlighted) { try { hljs.highlightElement(code); } catch (e) {} }
   });
   scope.querySelectorAll("pre").forEach(pre => {
     if (pre.parentElement && pre.parentElement.classList.contains("code-block")) return;
     const code = pre.querySelector("code");
-    let lang = "";
-    if (code) { const m = (code.className || "").match(/\blanguage-([\w+#.-]+)/i); if (m) lang = m[1]; }
+    const lang = code ? (code.dataset.lang || "") : "";
     const block = document.createElement("div"); block.className = "code-block";
     const head = document.createElement("div"); head.className = "code-head";
     const lab = document.createElement("span"); lab.className = "code-lang"; lab.textContent = langLabel(lang);
@@ -2497,6 +2543,10 @@ async function runCompletion(conv, opts) {
       history = sliced;
     }
   }
+  // 让模型用可渲染的 LaTeX 写公式，而不是把 ASCII 公式塞进 ``` 代码块（本界面用 KaTeX 渲染数学）。
+  // 只加在面向用户的对话请求上——标题/摘要/节点命名等工具调用不走这里，不受影响。
+  const mathHint = "输出数学公式时请使用 LaTeX：行内用 $…$，单独成行用 $$…$$；不要把公式写成纯文本，也不要放进代码块（``` 仅用于真正的程序代码）。";
+  system = system ? (system + "\n\n" + mathHint) : mathHint;
   let acc = "", racc = "", usage = null, aborted = false, errInfo = null, answerStarted = false, reasonShown = false;
   // While the user is selecting text in the transcript, don't rebuild the streaming DOM (replacing the
   // selection's anchor node mid-drag snaps the selection to the top of the conversation). Two guards together:
@@ -3998,10 +4048,14 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !abortController && canUndoSend()) { e.preventDefault(); undoLastSend(); return; }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!abortController) sendMessage(); }
 });
-input.addEventListener("paste", async (e) => {
+// Cmd/Ctrl+V 粘贴图片 / 文件到输入框——任意位置均可，不必先聚焦输入框；纯文本粘贴保持默认行为。
+document.addEventListener("paste", async (e) => {
   const items = [...((e.clipboardData && e.clipboardData.items) || [])];
-  const imgs = items.filter(it => it.type.startsWith("image/"));
-  if (imgs.length) { e.preventDefault(); for (const it of imgs) { const f = it.getAsFile(); if (f) await handleFiles([f]); } }
+  const fs = items.filter(it => it.kind === "file").map(it => it.getAsFile()).filter(Boolean);
+  if (!fs.length) return;
+  e.preventDefault();
+  await handleFiles(fs);
+  focusInput();   // 带焦点回输入框，附件即在此，可直接补字发送
 });
 
 const composerInner = document.getElementById("composer-inner");

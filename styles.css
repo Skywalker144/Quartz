@@ -31,6 +31,7 @@
   --tg-off: #48484a;          /* iOS-style toggle: solid off-track (medium gray) */
   --tg-knob-off: #ffffff;     /* white knob */
   --tg-knob-on: var(--bg);    /* dark knob on the lit (on) track */
+  --sel-bg: #574785;          /* text selection — a muted crystal, not the OS blue (kept readable over dim/quoted gray) */
 }
 [data-theme="light"] {
   --tg-off: #d6d6db;          /* iOS-style toggle: solid off-track (light gray) */
@@ -60,7 +61,12 @@
   --shadow-card: 0 3px 10px rgba(0,0,0,.10);
   --shadow-pop: 0 8px 22px rgba(0,0,0,.16);
   --focus-border: #c4c4c4;
+  --sel-bg: #d8caf6;          /* pale crystal selection (light) */
 }
+/* Text selection — high-contrast, monochrome-friendly. The OS-default blue washed out dimmed/quoted
+   gray text in dark mode; forcing the foreground to --accent keeps any selected text legible. */
+::selection { background: var(--sel-bg); color: var(--accent); }
+::-moz-selection { background: var(--sel-bg); color: var(--accent); }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -230,6 +236,8 @@ svg { display: block; }
 .katex { font-size: 1.05em; }
 .katex-display { margin: 8px 0; }
 .math-block { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.math-bare { margin: 10px 0; }   /* a bare ``` formula rescued into KaTeX — sit like a block, not jammed */
+.math-bare > .math-block { padding: 3px 0; }
 #header {
   height: 60px; flex-shrink: 0;
   display: flex; align-items: center; padding: 0 14px; gap: 8px;
