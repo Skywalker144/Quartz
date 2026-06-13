@@ -1745,41 +1745,17 @@ function openLightbox(src) {
   requestAnimationFrame(() => ov.classList.add("show"));
 }
 
-/* 选中回答文字 → 浮出「引用」按钮，一键以引用块填入输入框追问 */
-let _qfab = null;
-function hideQuoteFab() { if (_qfab) _qfab.style.display = "none"; }
-function quoteSelection() {
-  const s = window.getSelection && window.getSelection();
-  const text = s ? s.toString().trim() : "";
-  hideQuoteFab();
+/* 引用：把选中的回答文字以引用块填入输入框追问。入口在助手消息的右键菜单——主动触发，
+ * 不再用划词浮按钮（那个常被误碰，输入框莫名多出一段引用）。 */
+function quoteText(text) {
+  text = (text || "").trim();
   if (!text) return;
   const quote = text.split("\n").map(l => "> " + l).join("\n") + "\n\n";
   const inp = document.getElementById("input");
   inp.value = quote + inp.value;
   autoGrow(); inp.focus();
   inp.setSelectionRange(inp.value.length, inp.value.length);
-  if (s) s.removeAllRanges();
-}
-function maybeShowQuoteFab() {
-  const s = window.getSelection && window.getSelection();
-  if (!s || s.isCollapsed || !s.rangeCount || !s.toString().trim()) { hideQuoteFab(); return; }
-  const node = s.anchorNode;
-  const el = node && (node.nodeType === 1 ? node : node.parentElement);
-  const cEl = el && el.closest ? el.closest(".msg-content") : null;
-  const rowEl = cEl && cEl.closest(".msg-row");
-  if (!rowEl || !rowEl.classList.contains("msg-assistant")) { hideQuoteFab(); return; }
-  if (!_qfab) {
-    _qfab = document.createElement("button");
-    _qfab.id = "quote-fab"; _qfab.type = "button"; _qfab.textContent = "引用";
-    _qfab.addEventListener("mousedown", (e) => e.preventDefault());   // 不夺焦点、不清选区
-    _qfab.onclick = quoteSelection;
-    document.body.appendChild(_qfab);
-  }
-  const r = s.getRangeAt(0).getBoundingClientRect();
-  if (!r || (!r.width && !r.height)) { hideQuoteFab(); return; }
-  _qfab.style.display = "block";
-  _qfab.style.left = Math.min(window.innerWidth - 64, Math.max(8, r.right - 28)) + "px";
-  _qfab.style.top = Math.min(window.innerHeight - 42, r.bottom + 8) + "px";
+  const s = window.getSelection && window.getSelection(); if (s) s.removeAllRanges();
 }
 
 function renderAttachments(el, atts) {
@@ -1805,7 +1781,14 @@ function buildMessage(msg, index) {
   const row = document.createElement("div");
   row.className = "msg-row msg-" + msg.role;
   row.dataset.index = index;
-  row.oncontextmenu = (e) => { if (editingIndex != null) return; e.preventDefault(); showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg)); };
+  row.oncontextmenu = (e) => {
+    if (editingIndex != null) return;
+    e.preventDefault();
+    // capture any text selected WITHIN this assistant message NOW — opening/clicking the menu collapses the selection
+    const s = window.getSelection && window.getSelection();
+    const quoteSel = (s && !s.isCollapsed && s.rangeCount && row.contains(s.anchorNode) && row.classList.contains("msg-assistant")) ? s.toString().trim() : "";
+    showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg, quoteSel));
+  };
   const inner = document.createElement("div");
   inner.className = "msg-inner";
   inner.innerHTML =
@@ -2244,7 +2227,7 @@ function regenerateWith(index, ref) {
   conv.model = clone(ref); save();
   regenerate(index);
 }
-function messageMenuItems(index, msg) {
+function messageMenuItems(index, msg, quoteSel) {
   const conv = currentConv();
   const isLast = conv && index === conv.messages.length - 1;
   if (msg.role === "user") {
@@ -2268,10 +2251,12 @@ function messageMenuItems(index, msg) {
     disabled: !keyOf(ref),
     onClick: () => regenerateWith(index, ref),
   }));
-  const items = [
+  const items = [];
+  if (quoteSel) items.push({ label: "引用选中文字", icon: "chat", onClick: () => quoteText(quoteSel) }, { sep: true });
+  items.push(
     { label: "复制", icon: "copy", onClick: () => copyMessage(index) },
     { label: "重新回答", icon: "refresh", onClick: () => regenerate(index) },
-  ];
+  );
   if (models.length) items.push({ label: "用其他模型重答", icon: "cube", sub: models });
   items.push({ label: "从这里分支", icon: "fork", onClick: () => forkConversation(index) });
   items.push({ sep: true }, { label: "删除", icon: "trash", danger: true, onClick: () => deleteMessage(index) });
@@ -4214,10 +4199,6 @@ messagesBox.addEventListener("touchstart", () => { pinTop = null; nodePinned = n
 // so the selection's anchor node isn't replaced mid-drag (which would snap the selection to the top). See onDelta.
 messagesBox.addEventListener("mousedown", () => { selPointerDown = true; });
 document.addEventListener("mouseup", () => { selPointerDown = false; });
-// 选中回答文字后浮出「引用」；点别处 / 滚动即收起（mouseup 后下一拍再测，让选区先定型）
-document.addEventListener("mouseup", (e) => { if (_qfab && e.target === _qfab) return; setTimeout(maybeShowQuoteFab, 0); });
-document.addEventListener("mousedown", (e) => { if (_qfab && e.target === _qfab) return; hideQuoteFab(); });
-messagesBox.addEventListener("scroll", hideQuoteFab);
 // Tap the floating ↓ to jump to the bottom and resume following the stream.
 const _scrollBtn = document.getElementById("scroll-btn");
 if (_scrollBtn) _scrollBtn.addEventListener("click", () => {
