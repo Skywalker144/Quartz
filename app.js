@@ -84,6 +84,8 @@ let abortController = null;
 let restoreOnAbort = null;   // {text, attachments} marker that this run was a fresh send (vs regenerate/continue)
 let undoSend = null;         // armed after Esc-stops a fresh send: a SECOND Esc undoes the whole turn (prompt → input box)
 let pending = [];        // composer attachments awaiting send
+const _drafts = new Map();    // conv id -> { text, pending } unsent composer draft, kept in memory only (never persisted)
+let composerConvId = null;    // which conversation's draft currently sits in the composer (for stash/restore on switch)
 let editingIndex = null; // index of message being edited inline
 let autoScroll = true;   // follow streaming output only while the user is at the bottom
 let pinTop = null;       // while answering: target scrollTop that keeps the user's message at the top
@@ -614,11 +616,24 @@ function estContextTokens(conv) {
 }
 function fmtTok(n) { return n >= 1000 ? ((n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k") : String(n); }
 function updateComposerToggles() {
-  const w = document.getElementById("web-btn"); if (w) w.classList.toggle("active", activeWeb());
+  const ref = activeRef();
+  const w = document.getElementById("web-btn");
+  if (w) {
+    const webOk = !!ref && ref.provider === "openrouter";   // 联网仅 OpenRouter 模型支持
+    const on = activeWeb() && webOk;
+    w.classList.toggle("active", on);
+    w.classList.toggle("unsupported", !webOk);
+    w.dataset.tip = webOk ? "联网搜索（仅 OpenRouter）" : "当前模型不支持联网（仅 OpenRouter 模型可用）";
+    w.setAttribute("aria-pressed", on ? "true" : "false");
+  }
   const t = document.getElementById("think-btn");
   if (t) {
-    const on = activeReasoning();
+    const noReason = reasoningSupport(ref) === "no";       // 仅 OpenRouter 目录明确标注「不支持」时才灰显
+    const on = activeReasoning() && !noReason;
     t.classList.toggle("active", on);
+    t.classList.toggle("unsupported", noReason);
+    t.dataset.tip = noReason ? "当前模型不支持思考" : "思考强度（点击调节）";
+    t.setAttribute("aria-pressed", on ? "true" : "false");
     const lvl = t.querySelector(".cb-think-lvl");
     if (lvl) lvl.textContent = on ? (EFFORT_LABELS[activeEffort()] || "中") : "";
   }
@@ -873,7 +888,7 @@ function deepseekCost(model, u) {
 }
 function toast(msg, action) {
   let t = document.getElementById("toast");
-  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  if (!t) { t = document.createElement("div"); t.id = "toast"; t.setAttribute("role", "status"); t.setAttribute("aria-live", "polite"); document.body.appendChild(t); }
   t.innerHTML = "";
   const span = document.createElement("span"); span.textContent = msg; t.appendChild(span);
   if (action && action.label && typeof action.fn === "function") {
@@ -1080,10 +1095,14 @@ function isTextLike(file) {
   return TEXT_EXT.includes(ext) || TEXT_EXT.includes(file.name.toLowerCase());
 }
 async function handleFiles(files) {
+  let addedImage = false;
   for (const file of files) {
     try {
-      if (file.type.startsWith("image/")) pending.push({ kind: "image", name: file.name, dataUrl: await downscaleImage(file) });
-      else if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) pending.push({ kind: "pdf", name: file.name, dataUrl: await readAs(file, "dataurl") });
+      if (file.type.startsWith("image/")) { pending.push({ kind: "image", name: file.name, dataUrl: await downscaleImage(file) }); addedImage = true; }
+      else if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+        if (file.size > 20 * 1024 * 1024) { toast("「" + file.name + "」超过 20MB，PDF 太大，未添加"); continue; }   // 图片有降采样、文本会截断，唯独 PDF 整份转 base64，过大撑爆存储
+        pending.push({ kind: "pdf", name: file.name, dataUrl: await readAs(file, "dataurl") });
+      }
       else if (isTextLike(file)) {
         let text = await readAs(file, "text");
         if (text.length > 200000) text = text.slice(0, 200000) + "\n…（文件过长，已截断）";
@@ -1092,6 +1111,9 @@ async function handleFiles(files) {
     } catch (e) { console.error(e); toast("读取「" + file.name + "」失败"); }
   }
   renderPending();
+  // 提前提示（不必等到发送才被拦）：当前是 DeepSeek 又贴了图——它不支持图片。
+  const ref = activeRef();
+  if (addedImage && ref && ref.provider === "deepseek") toast("当前 DeepSeek 模型不支持图片，发送前请切换模型或移除图片");
 }
 function renderPending() {
   const row = document.getElementById("attach-row");
@@ -1109,6 +1131,7 @@ function renderPending() {
     rm.onclick = () => { pending.splice(i, 1); renderPending(); };
     el.appendChild(rm); row.appendChild(el);
   });
+  updateSendButton();   // attachments count toward "has something to send"
 }
 
 /* ===================== Rendering ===================== */
@@ -1216,14 +1239,27 @@ function relTime(ts) {
 function buildConvEl(c) {
   const el = document.createElement("div");
   el.className = "conv" + (c.id === state.currentId ? " active" : "") + (c.pinned ? " pinned" : "");
+  el.tabIndex = 0; el.setAttribute("role", "option"); el.setAttribute("aria-selected", c.id === state.currentId ? "true" : "false");
   el.innerHTML =
     '<div class="conv-row"><span class="title"></span>' +
     '<span class="conv-actions">' +
-    '<button class="pin" title="' + (c.pinned ? "取消置顶" : "置顶") + '">' + PIN_SVG + '</button>' +
-    '<button class="del" title="删除（移入已归档）">' + ic("x", 15) + '</button>' +
+    '<button class="pin" title="' + (c.pinned ? "取消置顶" : "置顶") + '" aria-label="' + (c.pinned ? "取消置顶" : "置顶") + '">' + PIN_SVG + '</button>' +
+    '<button class="del" title="删除（移入已归档）" aria-label="删除（移入已归档）">' + ic("x", 15) + '</button>' +
     '</span></div>';
-  el.querySelector(".title").textContent = c.title || "新对话";
+  const titleEl = el.querySelector(".title");
+  titleEl.textContent = c.title || "新对话";
+  titleEl.title = c.title || "新对话";   // AI 标题常超宽被截断——悬停看全名（与归档项一致）
   el.onclick = () => { state.currentId = c.id; editingIndex = null; autoScroll = true; nodePinned = null; save(); renderAll(); };
+  // keyboard: Enter/Space opens, ↑/↓ move focus to the prev/next conversation row (skipping group headers)
+  el.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.onclick(); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      let sib = el;
+      do { sib = (e.key === "ArrowDown") ? sib.nextElementSibling : sib.previousElementSibling; } while (sib && !sib.classList.contains("conv"));
+      if (sib) sib.focus();
+    }
+  };
   el.querySelector(".pin").onclick = (e) => { e.stopPropagation(); togglePin(c); };
   el.querySelector(".del").onclick = (e) => {
     e.stopPropagation();
@@ -1258,8 +1294,11 @@ function renderSidebar() {
     const cid = state.currentId;
     const ordered = state.conversations.filter(c => convMatches(c, q) || c.id === cid);
     if (!ordered.length) {
-      const e = document.createElement("div"); e.className = "conv-empty"; e.textContent = "没有匹配的对话";
-      list.appendChild(e);
+      const e = document.createElement("div"); e.className = "conv-empty";
+      e.append(document.createTextNode("没有匹配的对话"), document.createElement("br"));
+      const btn = document.createElement("button"); btn.className = "conv-empty-clear"; btn.textContent = "清除搜索";
+      btn.onclick = () => { clearConvSearch(); renderSidebar(); clearSearchHighlight(); applySearchHighlight(); const si = document.getElementById("conv-search"); if (si) si.focus(); };
+      e.appendChild(btn); list.appendChild(e);
     } else ordered.forEach(c => list.appendChild(buildConvEl(c)));
     renderArchive(); requestAnimationFrame(updateConvListFade); return;
   }
@@ -1382,8 +1421,10 @@ async function clearAllArchived() {
     okText: "全部删除", danger: true,
   });
   if (!ok) return;
+  const backup = state.archived.slice();   // 即便确认了，也留个短时撤销缓冲（这是最危险的批量清空）
   state.archived = [];
   save(); renderArchive();
+  toast("已清空 " + backup.length + " 个已归档对话", { label: "撤销", fn: () => { state.archived = backup.concat(state.archived || []); save(); renderArchive(); } });
 }
 function renderArchive() {
   requestAnimationFrame(updateConvListFade);
@@ -1588,7 +1629,36 @@ function applySearchHighlight() {
   else updateFindCount();
 }
 
+// Drafts (unsent composer text + attachments) belong to the conversation they were typed in. On every
+// switch, stash the outgoing chat's draft and restore the incoming one — so half-written text and pasted
+// images never bleed into (or get sent to) the wrong conversation. Kept in memory only, off the saved state.
+function syncComposerDraft() {
+  const inp = document.getElementById("input");
+  if (!inp) return;
+  const newId = state.currentId;
+  if (newId === composerConvId) return;            // not an actual switch — nothing to do
+  if (composerConvId != null) {
+    if (inp.value.trim() || pending.length) _drafts.set(composerConvId, { text: inp.value, pending: pending.slice() });
+    else _drafts.delete(composerConvId);
+  }
+  const d = (newId != null) ? _drafts.get(newId) : null;
+  pending = d ? d.pending.slice() : [];
+  inp.value = d ? d.text : "";
+  composerConvId = newId;
+  autoGrow(); renderPending(); updateSendButton();
+}
+// Dim the send button when there's nothing to send (empty input + no attachments), so it no longer looks
+// like a dead button. Skipped while it's in ■ "stop" form (a request is in flight).
+function updateSendButton() {
+  const btn = document.getElementById("send");
+  if (!btn || btn.classList.contains("stop")) return;
+  const inp = document.getElementById("input");
+  const empty = !(inp && inp.value.trim()) && !pending.length;
+  btn.classList.toggle("disabled", empty);
+}
+
 function renderMessages() {
+  syncComposerDraft();   // stash/restore the per-conversation composer draft before (re)rendering
   const conv = currentConv();
   const box = document.getElementById("messages");
   const empty = document.getElementById("empty");
@@ -1639,7 +1709,14 @@ function renderMessages() {
 
 /* 应用内图片查看器：暗色遮罩 + 滚轮缩放 + 双击复原 + Esc / 点空白关闭（替代旧的 window.open 空白窗口） */
 let _lb = null, _lbScale = 1;
-function _lbKey(e) { if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); closeLightbox(); } }
+function _lbZoom(img, factor) { _lbScale = Math.min(8, Math.max(0.25, _lbScale * factor)); img.style.transform = factor === 1 ? "" : "scale(" + _lbScale.toFixed(3) + ")"; }
+function _lbKey(e) {
+  if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); closeLightbox(); return; }
+  const img = _lb && _lb.querySelector("img"); if (!img) return;
+  if (e.key === "+" || e.key === "=") { e.preventDefault(); _lbZoom(img, 1.2); }
+  else if (e.key === "-" || e.key === "_") { e.preventDefault(); _lbZoom(img, 1 / 1.2); }
+  else if (e.key === "0") { e.preventDefault(); _lbScale = 1; img.style.transform = ""; }
+}
 function closeLightbox() {
   if (!_lb) return;
   const el = _lb; _lb = null;
@@ -1653,6 +1730,8 @@ function openLightbox(src) {
   const ov = document.createElement("div"); ov.id = "lightbox";
   const img = document.createElement("img"); img.src = src;
   ov.appendChild(img);
+  const hint = document.createElement("div"); hint.className = "lb-hint"; hint.textContent = "滚轮 / +− 缩放 · 双击或 0 复原 · Esc 关闭";
+  ov.appendChild(hint);
   ov.onclick = (e) => { if (e.target === ov) closeLightbox(); };
   img.ondblclick = () => { _lbScale = 1; img.style.transform = ""; };
   ov.addEventListener("wheel", (e) => {
@@ -1806,7 +1885,7 @@ function buildMessage(msg, index) {
   } else if (msg.error) {
     actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
-    if (msg.stopped) actions.append(mk("send", "继续", "", () => continueGeneration(index)));   // 被中断的回答：从断点接着写
+    if (msg.stopped) actions.append(mk("send", "继续", "continue", () => continueGeneration(index)));   // 被中断的回答：从断点接着写（视觉突出，别埋在按钮堆里）
     actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
 
@@ -1815,9 +1894,9 @@ function buildMessage(msg, index) {
   if (!isUser && Array.isArray(msg.variants) && msg.variants.length > 1) {
     const vi = (typeof msg.vi === "number") ? msg.vi : msg.variants.length - 1;
     const sw = document.createElement("div"); sw.className = "variant-switch";
-    const prev = document.createElement("button"); prev.className = "vs-btn"; prev.textContent = "‹"; prev.title = "上一个回答"; prev.disabled = vi <= 0;
+    const prev = document.createElement("button"); prev.className = "vs-btn"; prev.textContent = "‹"; prev.title = "上一个回答"; prev.setAttribute("aria-label", "上一个回答"); prev.disabled = vi <= 0;
     const lab = document.createElement("span"); lab.className = "vs-label"; lab.textContent = (vi + 1) + " / " + msg.variants.length;
-    const next = document.createElement("button"); next.className = "vs-btn"; next.textContent = "›"; next.title = "下一个回答"; next.disabled = vi >= msg.variants.length - 1;
+    const next = document.createElement("button"); next.className = "vs-btn"; next.textContent = "›"; next.title = "下一个回答"; next.setAttribute("aria-label", "下一个回答"); next.disabled = vi >= msg.variants.length - 1;
     prev.onclick = () => switchVariant(index, vi - 1);
     next.onclick = () => switchVariant(index, vi + 1);
     sw.append(prev, lab, next);
@@ -1916,11 +1995,11 @@ function enhanceCode(scope) {
     const block = document.createElement("div"); block.className = "code-block";
     const head = document.createElement("div"); head.className = "code-head";
     const lab = document.createElement("span"); lab.className = "code-lang"; lab.textContent = langLabel(lang);
-    const btn = document.createElement("button"); btn.type = "button"; btn.className = "code-copy";
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "code-copy"; btn.setAttribute("aria-label", "复制代码");
     const reset = () => { btn.classList.remove("done"); btn.innerHTML = ic("copy", 13) + "<span>复制</span>"; };
     reset();
     btn.onclick = () => {
-      navigator.clipboard.writeText((pre.querySelector("code") || pre).innerText);
+      navigator.clipboard.writeText((pre.querySelector("code") || pre).textContent);   // textContent keeps long horizontally-scrolled lines intact (innerText can drop them)
       btn.classList.add("done"); btn.innerHTML = ic("check", 13) + "<span>已复制</span>";
       clearTimeout(btn._t); btn._t = setTimeout(reset, 1400);
     };
@@ -2062,6 +2141,7 @@ async function processNodeTitleQueue() {
 
 /* ===================== Message actions ===================== */
 function deleteMessage(index) {
+  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }   // deleting the streaming message would corrupt the transcript
   const conv = currentConv(); if (!conv) return;
   const removed = conv.messages[index];
   const snapshot = conv.messages.slice();         // shallow snapshot → exact undo
@@ -2098,8 +2178,14 @@ function regenerate(index) {
 function copyMessage(index, e) {
   const conv = currentConv(); if (!conv) return;
   navigator.clipboard.writeText(conv.messages[index].content || "");
-  if (e && e.target) { const btn = e.target, old = btn.textContent; btn.textContent = "✓ 已复制"; setTimeout(() => btn.textContent = old, 1200); }
-  else toast("已复制");
+  // currentTarget is always the .act button (clicking its icon would make e.target the <svg>); only swap the
+  // label <span> so the icon survives, and flag .done for the "copied" state.
+  const btn = e && e.currentTarget;
+  const lab = btn && btn.querySelector("span");
+  if (lab) {
+    lab.textContent = "已复制"; btn.classList.add("done");
+    clearTimeout(btn._t); btn._t = setTimeout(() => { lab.textContent = "复制"; btn.classList.remove("done"); }, 1200);
+  } else toast("已复制");
 }
 
 /* ===================== Right-click context menus ===================== */
@@ -2199,7 +2285,7 @@ function convMenuItems(c) {
     { label: "AI 生成标题", icon: "refresh", disabled: !hasTitleKey, onClick: () => regenerateTitle(c) },
     { label: "导出对话…", icon: "down", onClick: () => { state.currentId = c.id; editingIndex = null; save(); renderAll(); setTimeout(() => openExportMenu(document.getElementById("export-chat")), 40); } },
     { sep: true },
-    { label: "删除（移入归档）", icon: "trash", danger: true, onClick: () => { const nm = c.title || "新对话"; archiveConversation(c); toast("已删除「" + nm + "」", { label: "撤销", fn: () => restoreConversation(c.id) }); } },
+    { label: "删除（移入已归档）", icon: "trash", danger: true, onClick: () => { const nm = c.title || "新对话"; archiveConversation(c); toast("已删除「" + nm + "」", { label: "撤销", fn: () => restoreConversation(c.id) }); } },
   ];
 }
 
@@ -2223,8 +2309,16 @@ function switchVariant(asstIndex, newVi) {
   a.vi = newVi;
   a.content = v.content || ""; a.reasoning = v.reasoning || ""; a.usage = v.usage || null;
   let ui = asstIndex - 1; while (ui >= 0 && conv.messages[ui].role !== "user") ui--;
-  if (ui >= 0 && v.prompt != null) { conv.messages[ui].content = v.prompt; conv.messages[ui].attachments = (v.attachments || []).slice(); }
+  let promptChanged = false;
+  if (ui >= 0 && v.prompt != null) {
+    if ((conv.messages[ui].content || "") !== (v.prompt || "")) promptChanged = true;   // 这个版本连带恢复了不同的提问
+    conv.messages[ui].content = v.prompt; conv.messages[ui].attachments = (v.attachments || []).slice();
+  }
   save(); renderMessages();
+  if (promptChanged && ui >= 0) {   // 上面的提问被无声改写了——闪一下让用户察觉
+    const row = document.querySelector('#messages .msg-row[data-index="' + ui + '"]');
+    if (row) { row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1300); }
+  }
 }
 
 /* ===================== Provider request layer ===================== */
@@ -2565,14 +2659,16 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ renderAnswer(contentEl, renderMarkdown(cont != null ? contBase + t : t), true); enhanceCode(contentEl); /* 只扫当前这条消息——长对话里每个 chunk 扫全文会卡 */ applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); enhanceCode(reasoningBody); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（markdown/公式 renderMarkdown 已内联渲染） */ applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); if ((full.match(/```/g) || []).length % 2 === 0) enhanceCode(contentEl); /* 围栏未闭合（代码还在写）就先不高亮——否则每个 chunk 反复重建+高亮整段代码会卡；闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
+      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); if ((rt.match(/```/g) || []).length % 2 === 0) enhanceCode(reasoningBody); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
     });
-    acc = r.text || "（没有返回内容）"; racc = r.reasoning || racc; usage = r.usage;
+    acc = r.text || ""; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
     if (err.name === "AbortError") { aborted = true; acc = acc + (acc ? "\n\n_（已停止）_" : "_（已停止生成）_"); }
     else errInfo = friendlyError(err);
   }
+  // 流式正常结束却完全没有内容（无正文、无思考）→ 当软错误处理：给重试卡片，而不是存一句「（没有返回内容）」占位文本
+  if (!aborted && !errInfo && !acc.trim() && !(racc || "").trim()) errInfo = { title: "没有返回内容", body: "模型这次没有输出任何内容，可能是网络波动或模型异常。点「重试」再试一次。" };
 
   stopCrest(contentEl);
   finishThinking(row);   // 思考结束：标题→思考过程、窗口收起、水晶落回回答（reasoning-only 回复也走到这里）
@@ -2598,7 +2694,7 @@ async function runCompletion(conv, opts) {
   if (errInfo) last.error = errInfo; else delete last.error;   // structured error → inline error block + 重试
   if (aborted) {
     last.stopped = true;   // 被中断的回答 → 操作栏出现「继续」
-    if (freshSend) undoSend = { convId: conv.id, msgIndex: targetIndex, prompt: freshSend.text || "", attachments: (freshSend.attachments || []).slice() };
+    if (freshSend) { undoSend = { convId: conv.id, msgIndex: targetIndex, prompt: freshSend.text || "", attachments: (freshSend.attachments || []).slice() }; toast("已停止 · 再按一次 Esc 撤销本次发送"); }
   } else if (!errInfo) delete last.stopped;
   // if this turn was a regenerate / edit-resend, keep the previous answer(s) as switchable variants
   if (!errInfo && opts && Array.isArray(opts.carryVariants) && opts.carryVariants.length) {
@@ -2616,12 +2712,12 @@ async function runCompletion(conv, opts) {
   // is visible); otherwise keep them exactly where they had scrolled to.
   const keepTop = box.scrollTop;
   const wasFollowing = autoScroll;
-  pinTop = null;
   // renderSidebar 会因 innerHTML 重建把侧栏滚动弹回顶部；最后这次 render 保住其滚动位置（保留发送时的定位、不抖回顶部）。
   const convList = document.getElementById("conv-list");
   const sbKeep = convList ? convList.scrollTop : null;
-  renderMessages(); renderSidebar();
+  renderMessages(); renderSidebar();   // pinTop 仍非空 → 这轮 updateScrollBtn 不会误显按钮
   if (sbKeep != null) convList.scrollTop = sbKeep;
+  pinTop = null;   // 紧挨着设最终 scrollTop 才释放流式锚定，中间不留「按钮闪一下」的空帧
   box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
   lastSetTop = box.scrollTop;
   updateScrollBtn();
@@ -2756,7 +2852,7 @@ async function compactContext() {
   const prompt = "你是一个对话压缩器。请把下面的对话压缩成一段简洁但信息完整的摘要，用于在后续对话中替代原文继续交流。务必保留：关键事实与结论、已做出的决定、涉及的代码/数据/数字、尚未完成的任务、用户的偏好与要求。用客观第三人称陈述，不要寒暄或评论。\n\n" + prior + body;
 
   showStatus("正在压缩上下文…");
-  setSending(true); abortController = new AbortController();
+  setSending(true, "compact"); abortController = new AbortController();
   try {
     const r = await streamChat(ref, { system: "", messages: [{ role: "user", content: prompt }] }, { temp: 0.3, maxTokens: 1200, signal: abortController.signal });
     const summary = (r.text || "").trim();
@@ -2818,14 +2914,14 @@ function startTitleRename() {
     if (e.key === "Enter") { e.preventDefault(); finish(true); }
     else if (e.key === "Escape") { e.preventDefault(); finish(false); }
   };
-  const onBlur = () => finish(true);
+  const onBlur = () => finish(false);   // blur = cancel (only Enter commits) — a stray click no longer silently overwrites the title
   h1.addEventListener("keydown", onKey);
   h1.addEventListener("blur", onBlur);
 }
-function setSending(sending) {
+function setSending(sending, reason) {
   const btn = document.getElementById("send");
-  if (sending) { btn.classList.add("stop"); btn.innerHTML = ic("stop", 16); btn.title = "停止"; }
-  else { btn.classList.remove("stop"); btn.innerHTML = ic("send", 18); btn.title = "发送"; }
+  if (sending) { btn.classList.remove("disabled"); btn.classList.add("stop"); btn.innerHTML = ic("stop", 16); btn.title = (reason === "compact") ? "停止压缩" : "停止"; }
+  else { btn.classList.remove("stop"); btn.innerHTML = ic("send", 18); btn.title = "发送"; updateSendButton(); }
   const rt = document.getElementById("retitle-chat");
   if (rt) rt.disabled = !!sending;   // AI 回答 / 压缩进行中：禁用「重新生成标题」，避免和正文生成抢占
 }
@@ -3027,7 +3123,18 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "general"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); }
+function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "general"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); requestAnimationFrame(() => { if (ss) ss.focus(); }); }
+// Keep Tab focus inside a modal (a dialog the user can't Tab out of). Cycles among the visible focusable
+// descendants; hidden sections (display:none) are skipped automatically (offsetParent === null).
+function trapTab(container, e) {
+  if (e.key !== "Tab") return;
+  const f = [...container.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
 function closeSettings() { cancelShortcutRecording(); document.getElementById("modal-bg").classList.remove("show"); syncTitleBarOverlay(); maybeShowGuide(); }
 function switchSection(sec) {
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.classList.toggle("active", b.dataset.sec === sec));
@@ -3071,15 +3178,22 @@ function filterSettingsNav(q) {
     }
     kids[i].classList.toggle("hidden", q !== "" && !anyVisible);
   }
-  if (q !== "") {
+  const firstVisible = items.find(b => !b.classList.contains("hidden"));
+  // zero-result note (otherwise the nav column just goes blank with no explanation)
+  let note = document.getElementById("nav-empty");
+  if (q !== "" && !firstVisible) {
+    if (!note) { note = document.createElement("div"); note.id = "nav-empty"; note.className = "nav-empty"; document.getElementById("modal-nav").appendChild(note); }
+    note.textContent = "无匹配设置"; note.style.display = "";
+  } else if (note) note.style.display = "none";
+  if (q !== "" && firstVisible) {
     const active = document.querySelector("#modal-nav .nav-item.active");
-    if (!active || active.classList.contains("hidden")) { const first = items.find(b => !b.classList.contains("hidden")); if (first) switchSection(first.dataset.sec); }
+    if (!active || active.classList.contains("hidden")) switchSection(firstVisible.dataset.sec);
   }
 }
 function bindSettingsSearch() {
   const inp = document.getElementById("set-search"); if (!inp) return;
   inp.addEventListener("input", () => filterSettingsNav(inp.value));
-  inp.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); inp.value = ""; filterSettingsNav(""); } });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Escape" && inp.value) { e.stopPropagation(); inp.value = ""; filterSettingsNav(""); } });   // 只有有文字时才吞 Esc 去清空；空框放行冒泡，让首个 Esc 能关设置
 }
 
 // ----- Data backup / restore -----
@@ -3550,7 +3664,7 @@ function confirmDialog(opts) {
     bg.querySelector(".cf-body").textContent = opts.body || "";
     const ok = document.getElementById("cf-ok"), cancel = document.getElementById("cf-cancel");
     ok.textContent = opts.okText || "确定";
-    ok.classList.toggle("danger", opts.danger !== false);
+    ok.classList.toggle("danger", opts.danger === true);   // 红色仅用于真正不可逆的操作（导入/恢复/清空），别处处皆红稀释信号
     cancel.textContent = opts.cancelText || "取消";
     bg.classList.add("show"); syncTitleBarOverlay();
     setTimeout(() => ok.focus(), 0);
@@ -3879,18 +3993,6 @@ function maybeShowGuide() {
 /* First-run / idle hints (gray helper text) */
 const IS_MAC = /mac/i.test(navigator.platform) || /Mac/.test(navigator.userAgent);
 const MOD = IS_MAC ? "⌘" : "Ctrl";
-function setupHints() {
-  // All hints live on one line — the input placeholder — so the composer stays compact (no separate hint row).
-  const i = document.getElementById("input");
-  if (i) i.placeholder = "Enter 发送      Shift + Enter 换行      / 命令";
-  const hint = document.getElementById("composer-hint");
-  if (hint) hint.innerHTML = "";
-}
-function updateComposerHint() {
-  // hints now live in the placeholder; keep the separate bottom line hidden
-  const inner = document.getElementById("composer-inner");
-  if (inner) inner.classList.remove("show-hint");
-}
 
 /* ===================== Slash commands ===================== */
 const SLASH_COMMANDS = [
@@ -3940,7 +4042,12 @@ document.getElementById("new-chat").onclick = newConversation;
 (function () {
   const s = document.getElementById("conv-search");
   if (s) {
-    s.addEventListener("input", () => { searchQuery = s.value.trim(); renderSidebar(); clearSearchHighlight(); applySearchHighlight(); });
+    let _searchTimer = null;
+    s.addEventListener("input", () => {
+      searchQuery = s.value.trim();
+      clearTimeout(_searchTimer);
+      _searchTimer = setTimeout(() => { renderSidebar(); clearSearchHighlight(); applySearchHighlight(); }, 120);   // 防抖：列表大时每键重建会抖、丢 hover/focus
+    });
     // Enter / ↓ next, Shift+Enter / ↑ prev — step through matches in the open conversation; Esc clears
     s.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); if (searchHits.length) setActiveHit(searchHitIndex + ((e.key === "Enter" && e.shiftKey) ? -1 : 1), true); }
@@ -3964,6 +4071,18 @@ document.getElementById("export-chat").onclick = (e) => { e.stopPropagation(); o
 document.getElementById("conv-title").ondblclick = startTitleRename;
 window.addEventListener("resize", evalTitleFade);
 window.addEventListener("resize", updateConvListFade);
+// Open popovers are positioned at fixed coordinates — close them on resize so they don't hang in stale spots.
+window.addEventListener("resize", () => { closePopover(); closePromptPop(); closeEffortPop(); closeSlash(); });
+// Tab focus traps for the two modals
+{ const md = document.getElementById("modal"); if (md) md.addEventListener("keydown", (e) => trapTab(md, e)); }
+{ const cb = document.getElementById("confirm-box"); if (cb) cb.addEventListener("keydown", (e) => trapTab(cb, e)); }
+// ⌘F / Ctrl+F — jump to search (the muscle-memory "find"); skipped while a modal/dialog is open
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "f" || e.key === "F")) {
+    if (anyModalOpen()) return;
+    e.preventDefault(); focusSearch();
+  }
+});
 document.getElementById("open-settings").onclick = () => openSettings();
 document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "modal-bg") closeSettings(); };
 document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.onclick = () => switchSection(b.dataset.sec));
@@ -3976,13 +4095,12 @@ setupSettingsLive();
 document.getElementById("cf-ok").onclick = () => closeConfirm(true);
 document.getElementById("cf-cancel").onclick = () => closeConfirm(false);
 document.getElementById("confirm-bg").onclick = (e) => { if (e.target.id === "confirm-bg") closeConfirm(false); };
-// Esc closes the open confirm → else the settings modal; Enter accepts an open confirm
+// Esc closes the open confirm → else the settings modal. Enter is deliberately NOT handled globally:
+// the focused button (确定 / 取消) responds to Enter/Space natively, so Enter no longer always = 确定.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (document.getElementById("confirm-bg").classList.contains("show")) { e.preventDefault(); closeConfirm(false); return; }
     if (document.getElementById("modal-bg").classList.contains("show")) { e.preventDefault(); closeSettings(); return; }
-  } else if (e.key === "Enter" && document.getElementById("confirm-bg").classList.contains("show")) {
-    e.preventDefault(); closeConfirm(true);
   }
 });
 document.getElementById("model-pill").onclick = () => {
@@ -4015,9 +4133,8 @@ const sendBtn = document.getElementById("send");
 sendBtn.onclick = () => { if (abortController) abortController.abort(); else sendMessage(); };
 
 const input = document.getElementById("input");
-input.addEventListener("input", () => { autoGrow(); closeEffortPop(); updateSlash(); });
-input.addEventListener("focus", () => updateComposerHint(false));
-input.addEventListener("blur", () => { setTimeout(closeSlash, 120); updateComposerHint(true); });
+input.addEventListener("input", () => { autoGrow(); closeEffortPop(); updateSlash(); updateSendButton(); });
+input.addEventListener("blur", () => { setTimeout(closeSlash, 120); });
 input.addEventListener("keydown", (e) => {
   if (slash.open) {
     if (e.key === "Tab" || (e.key === "Enter" && !e.isComposing)) { e.preventDefault(); confirmSlash(); return; }
@@ -4048,8 +4165,14 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !abortController && canUndoSend()) { e.preventDefault(); undoLastSend(); return; }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!abortController) sendMessage(); }
 });
-// Cmd/Ctrl+V 粘贴图片 / 文件到输入框——任意位置均可，不必先聚焦输入框；纯文本粘贴保持默认行为。
+// Cmd/Ctrl+V 粘贴图片 / 文件到输入框——聊天区任意位置均可，不必先聚焦输入框；纯文本粘贴保持默认行为。
 document.addEventListener("paste", async (e) => {
+  // 别抢走设置 / 对话框里的粘贴，也别在别的输入框（搜索、Key、行内改名）里把文件塞进聊天。
+  if (anyModalOpen()) return;
+  const ae = document.activeElement;
+  const inOtherField = ae && ae.id !== "input" &&
+    (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
+  if (inOtherField) return;
   const items = [...((e.clipboardData && e.clipboardData.items) || [])];
   const fs = items.filter(it => it.kind === "file").map(it => it.getAsFile()).filter(Boolean);
   if (!fs.length) return;
@@ -4060,8 +4183,15 @@ document.addEventListener("paste", async (e) => {
 
 const composerInner = document.getElementById("composer-inner");
 composerInner.addEventListener("dragover", (e) => { e.preventDefault(); composerInner.classList.add("drag"); });
-composerInner.addEventListener("dragleave", (e) => { if (e.target === composerInner) composerInner.classList.remove("drag"); });
+// only clear when the cursor actually left the composer (relatedTarget outside it / null when leaving the window),
+// not when it merely crossed into a child (textarea) — that used to leave the dashed border stuck.
+composerInner.addEventListener("dragleave", (e) => { if (!composerInner.contains(e.relatedTarget)) composerInner.classList.remove("drag"); });
 composerInner.addEventListener("drop", (e) => { e.preventDefault(); composerInner.classList.remove("drag"); if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+// window-level safety net: a drag that ends or drops anywhere clears the stuck hint.
+// Only a stray FILE drop is preventDefault'd (so it can't navigate the window) — text drops into other
+// inputs keep working natively.
+window.addEventListener("dragend", () => composerInner.classList.remove("drag"));
+window.addEventListener("drop", (e) => { if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) e.preventDefault(); composerInner.classList.remove("drag"); });
 
 // Scroll: follow streaming only when at the bottom; show a jump-to-bottom button otherwise
 const messagesBox = document.getElementById("messages");
@@ -4100,6 +4230,7 @@ if (_scrollBtn) _scrollBtn.addEventListener("click", () => {
 let resizing = false;
 const resizer = document.getElementById("sidebar-resizer");
 resizer.addEventListener("mousedown", (e) => { if (state.settings.sidebar.collapsed) return; resizing = true; document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none"; e.preventDefault(); });
+resizer.addEventListener("dblclick", () => { if (state.settings.sidebar.collapsed) return; state.settings.sidebar.width = 264; document.getElementById("sidebar").style.width = "264px"; save(); });   // 双击复位到默认宽度
 document.addEventListener("mousemove", (e) => { if (!resizing) return; const w = Math.min(480, Math.max(210, e.clientX - 10)); state.settings.sidebar.width = w; document.getElementById("sidebar").style.width = w + "px"; });
 document.addEventListener("mouseup", () => { if (resizing) { resizing = false; document.body.style.cursor = ""; document.body.style.userSelect = ""; save(); } });
 
@@ -4297,7 +4428,6 @@ setTimeout(autoBackup, 10000);
 setInterval(autoBackup, 60 * 60 * 1000);
 { const ob = document.getElementById("data-open-backups"); if (ob) ob.onclick = () => window.chatbox.openBackups && window.chatbox.openBackups(); }
 setupMarked();
-setupHints();
 // Track the floating composer's height so messages stay padded above it and the
 // scroll-to-bottom button floats just over it.
 (function () {
@@ -4341,7 +4471,7 @@ function applySeed(seed) {
   renderAll();
   requestAnimationFrame(scrollActiveConvIntoView);   // land the restored conversation ~20% down the sidebar
   applyDensity();
-  updateComposerHint();
+  updateSendButton();   // start with the send button correctly dimmed when the composer is empty
   pushQuickConfig();   // hand the quick-ask bar its initial config as soon as we're up
   try { if (window.chatbox && window.chatbox.getUpdateStatus) renderUpdatePill(await window.chatbox.getUpdateStatus()); } catch (e) {}
   if (_pendingQuick) { const q = _pendingQuick; _pendingQuick = null; handleQuickOpen(q); }

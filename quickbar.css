@@ -59,9 +59,15 @@ body { font-family: var(--font-family); -webkit-user-select: none; user-select: 
 #qans-scroll { position: relative; }
 #qans-content {
   font-size: 14.5px; line-height: 1.62; color: var(--text);
-  max-height: 384px; overflow-y: auto; padding: 12px 0 2px;
+  max-height: 384px; overflow-y: auto; padding: 12px 6px 2px 0;
   -webkit-user-select: text; user-select: text;
+  scrollbar-gutter: stable;   /* 预留滚动条槽，流式从不可滚动→可滚动时文字不横向跳动 */
 }
+/* 细的非悬浮滚动条——默认 macOS 悬浮条会浮在文字上挡字，定义宽度后改用占位滚动条，文字自动避开 */
+#qans-content::-webkit-scrollbar { width: 8px; }
+#qans-content::-webkit-scrollbar-track { background: transparent; }
+#qans-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+#qans-content::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 /* fade overlays sit over the top / bottom edges of the scroll viewport; shown only when
    there is content scrolled out of view (toggled by JS) — replaces the divider lines. */
 #qans-scroll::before, #qans-scroll::after {

@@ -25,7 +25,7 @@
         <button id="conv-search-clear" type="button" title="清除搜索">✕</button>
       </div>
     </div>
-    <div id="conv-list"></div>
+    <div id="conv-list" role="listbox" aria-label="对话列表"></div>
     <div id="archive-list-wrap"></div>
     <div id="sidebar-footer">
       <button id="archive-toggle"></button>
@@ -60,13 +60,13 @@
     <div id="chat-area">
       <div id="find-bar" hidden>
         <span id="find-count">0/0</span>
-        <button id="find-prev" title="上一个 (Shift+Enter)">
+        <button id="find-prev" title="上一个 (Shift+Enter)" aria-label="上一个匹配">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
         </button>
-        <button id="find-next" title="下一个 (Enter)">
+        <button id="find-next" title="下一个 (Enter)" aria-label="下一个匹配">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </button>
-        <button id="find-close" title="关闭 (Esc)">
+        <button id="find-close" title="关闭 (Esc)" aria-label="关闭查找">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
       </div>
@@ -108,24 +108,23 @@
         <div id="composer-bar">
           <div class="cb-left">
             <span id="prompt-pill" class="cb-chip" data-tip="系统提示词（点击切换）">无提示词</span>
-            <button class="cb-btn" id="attach-btn" data-tip="添加图片 / 文件">
+            <button class="cb-btn" id="attach-btn" data-tip="添加图片 / 文件" aria-label="添加图片或文件">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <button class="cb-btn" id="web-btn" data-tip="联网搜索（仅 OpenRouter）">
+            <button class="cb-btn" id="web-btn" data-tip="联网搜索（仅 OpenRouter）" aria-label="联网搜索" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/></svg>
             </button>
-            <button class="cb-btn" id="compact-btn" data-tip="压缩前文（AI 总结较早对话，省上下文）" data-tip-delay="0">
+            <button class="cb-btn" id="compact-btn" data-tip="压缩前文（AI 总结较早对话，省上下文）" data-tip-delay="0" aria-label="压缩上下文">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="9 5 12 8 15 5"/><polyline points="9 19 12 16 15 19"/></svg>
             </button>
           </div>
           <div class="cb-right">
             <span id="model-pill" class="cb-model" data-tip="点击切换模型" data-tip-delay="0">未设置模型</span>
-            <button class="cb-btn cb-think" id="think-btn" data-tip="思考强度（点击调节）">
+            <button class="cb-btn cb-think" id="think-btn" data-tip="思考强度（点击调节）" aria-label="思考强度" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5C17.7 10.2 18 9 18 8a6 6 0 0 0-12 0c0 1 .3 2.2 1.5 3.5.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg><span class="cb-think-lvl"></span>
             </button>
           </div>
         </div>
-        <div id="composer-hint"></div>
       </div>
       <input type="file" id="file-input" multiple hidden>
     </div>
@@ -142,8 +141,8 @@
 
   <!-- Settings Modal (two-pane) -->
   <div id="modal-bg">
-    <div id="modal">
-      <button id="modal-close" title="关闭（Esc）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    <div id="modal" role="dialog" aria-modal="true" aria-label="设置">
+      <button id="modal-close" title="关闭（Esc）" aria-label="关闭设置"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       <nav id="modal-nav">
         <div class="modal-title">设置</div>
         <div id="set-search-wrap">
@@ -500,9 +499,9 @@
 
   <!-- Custom confirm dialog -->
   <div id="confirm-bg">
-    <div id="confirm-box">
-      <h3 class="cf-title"></h3>
-      <p class="cf-body"></p>
+    <div id="confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="cf-title-el" aria-describedby="cf-body-el">
+      <h3 class="cf-title" id="cf-title-el"></h3>
+      <p class="cf-body" id="cf-body-el"></p>
       <div class="cf-actions">
         <button class="btn" id="cf-cancel">取消</button>
         <button class="btn danger" id="cf-ok">确定</button>

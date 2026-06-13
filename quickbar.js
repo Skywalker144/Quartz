@@ -167,6 +167,8 @@ async function streamAsk(userText, signal, onDelta) {
     const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
     if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; body.usage = { include: true }; }
     else if (ref.provider === "openai" || ref.provider === "deepseek") body.stream_options = { include_usage: true };
+    // DeepSeek V4 混合模型（pro/flash）默认开启思考——QuickBar 是快速问答，显式关掉思考让回答秒出。
+    if (ref.provider === "deepseek") body.thinking = { type: "disabled" };
     const resp = await fetch(prov.base + "/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal });
     if (!resp.ok) throw new Error(await errText(resp));
     await pumpSSE(resp, (j) => {
