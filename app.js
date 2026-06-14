@@ -186,12 +186,14 @@ function freshState() {
       quick: { enabled: true, shortcut: defaultQuick(), model: null, promptMode: "concise", concisePrompt: QUICK_PROMPT, closeOnBlur: true, width: 720, topPct: 18, openMainEnabled: true, openMainShortcut: defaultOpenMain() },
       proxy: { enabled: false, scheme: "http", host: "127.0.0.1", port: "" },
       general: { restoreLast: true, sidebarSort: "updated" },
+      profile: { name: "", avatar: "" },   // 显示在新对话首页的问候 / 侧栏底部；avatar 为图片 dataURL，留空用名字首字母
       tempBumped: true,
       guideSeen: false,
     },
     conversations: [],
     archived: [],
     currentId: null,
+    stats: { daily: {} },   // 每日 token 用量（贡献图）+ 缓存的 AI 小结报告
   };
 }
 
@@ -311,6 +313,7 @@ function ensureShape(s) {
   s.settings.quick = Object.assign({}, f.settings.quick, s.settings.quick);
   s.settings.proxy = Object.assign({}, f.settings.proxy, s.settings.proxy);
   s.settings.general = Object.assign({}, f.settings.general, s.settings.general);
+  s.settings.profile = Object.assign({}, f.settings.profile, s.settings.profile);
   // One-time: move the quick bar onto its dedicated concise prompt (was "default").
   if (!s.settings.quick.promptModeMigrated) {
     if (!s.settings.quick.promptMode || s.settings.quick.promptMode === "default") s.settings.quick.promptMode = "concise";
@@ -394,6 +397,9 @@ function ensureShape(s) {
     s.settings.codeThemeVivid = true;
   }
 
+  s.stats = s.stats || {};
+  if (!s.stats.daily || typeof s.stats.daily !== "object") s.stats.daily = {};
+  if (!s.stats.dailyCost || typeof s.stats.dailyCost !== "object") s.stats.dailyCost = {};
   s.conversations = (s.conversations || []).map(c => shapeConv(c, s));
   s.archived = (s.archived || []).map(c => shapeConv(c, s));
   return s;
@@ -866,6 +872,31 @@ function convTotals(conv) {
   for (const m of conv.messages) if (m.usage) { has = true; pt += m.usage.prompt_tokens || 0; ct += m.usage.completion_tokens || 0; cost += m.usage.cost || 0; }
   return { pt, ct, cost, has };
 }
+// ---- daily token stats (powers the contribution heatmap in 设置 → 统计) ----
+function dayKey(d) { const p = (x) => String(x).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
+function recordDailyUsage(usage) {
+  if (!usage || !state) return;
+  const t = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+  if (t <= 0) return;
+  state.stats = state.stats || {}; state.stats.daily = state.stats.daily || {}; state.stats.dailyCost = state.stats.dailyCost || {};
+  const k = dayKey(new Date());
+  state.stats.daily[k] = (state.stats.daily[k] || 0) + t;                          // 往后精确累计（save 紧随其后）
+  if (usage.cost > 0) state.stats.dailyCost[k] = (state.stats.dailyCost[k] || 0) + usage.cost;
+}
+// One-time rough backfill: attribute each conversation's total tokens + cost to its last-active day.
+// Approximate (a multi-day chat lands on one day) — a heatmap "vibe" for history; precise going forward.
+// Tokens and cost are seeded independently so an install that already seeded tokens still gets cost on upgrade.
+function backfillDailyStats() {
+  state.stats = state.stats || {}; state.stats.daily = state.stats.daily || {}; state.stats.dailyCost = state.stats.dailyCost || {};
+  if (state.stats.seeded && state.stats.seededCost) return;
+  (state.conversations || []).concat(state.archived || []).forEach(c => {
+    const tot = convTotals(c); const ts = convTime(c); if (!ts) return;
+    const k = dayKey(new Date(ts)); const t = (tot.pt || 0) + (tot.ct || 0);
+    if (!state.stats.seeded && t > 0) state.stats.daily[k] = (state.stats.daily[k] || 0) + t;
+    if (!state.stats.seededCost && tot.cost > 0) state.stats.dailyCost[k] = (state.stats.dailyCost[k] || 0) + tot.cost;
+  });
+  state.stats.seeded = true; state.stats.seededCost = true;
+}
 // DeepSeek 不像 OpenRouter 那样在 usage 里回传 cost，只给 token 数 + 缓存命中/未命中拆分，所以本地按官方单价估算。
 // 官方按人民币计价（¥ / 每百万 token），命中缓存(cacheHit)的输入比未命中(cacheMiss)便宜很多——这里存人民币原价，便于核对/调价。
 // 算出人民币成本后，按内置参考汇率换成美元存进 usage.cost：与 OpenRouter 等同口径（usage.cost 一律美元），
@@ -1169,6 +1200,8 @@ const ICON_PATHS = {
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>',
   fork: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  user: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/>',
+  chart: '<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="12" y="7" width="3" height="10"/><rect x="17" y="13" width="3" height="4"/>',
 };
 function ic(name, size) { size = size || 16; return '<svg class="ic" viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICON_PATHS[name] || "") + '</svg>'; }
 const PIN_SVG = ic("pin", 13);
@@ -1300,12 +1333,12 @@ function renderSidebar() {
       btn.onclick = () => { clearConvSearch(); renderSidebar(); clearSearchHighlight(); applySearchHighlight(); const si = document.getElementById("conv-search"); if (si) si.focus(); };
       e.appendChild(btn); list.appendChild(e);
     } else ordered.forEach(c => list.appendChild(buildConvEl(c)));
-    renderArchive(); requestAnimationFrame(updateConvListFade); return;
+    requestAnimationFrame(updateConvListFade); return;
   }
   if (!matched.length) {
     const e = document.createElement("div"); e.className = "conv-empty";
     e.textContent = "还没有对话";
-    list.appendChild(e); renderArchive(); return;
+    list.appendChild(e); requestAnimationFrame(updateConvListFade); return;
   }
   // the blank "新对话" always stays pinned to the very top (above pinned + recency groups),
   // so continuing an old chat or a QuickBar hand-off never bumps above it
@@ -1321,7 +1354,7 @@ function renderSidebar() {
   ["今天", "昨天", "近7天", "近30天", "更早"].forEach(b => {
     if (groups[b] && groups[b].length) { addHeader(b); groups[b].forEach(c => list.appendChild(buildConvEl(c))); }
   });
-  renderArchive();
+  requestAnimationFrame(updateConvListFade);
 }
 // On launch, bring the open conversation ~20% down from the top of the sidebar list — prominent, with a
 // little context above it — instead of leaving it wherever the freshly-rendered list happened to sit.
@@ -1362,27 +1395,7 @@ function revealActiveConv(opts) {
   else { if (convScrollRAF) { cancelAnimationFrame(convScrollRAF); convScrollRAF = 0; } list.scrollTop = target; }
 }
 
-/* ===================== Archive (recycle bin for deleted conversations) ===================== */
-let archiveOpen = false;
-// Once the archive list is expanded, a click anywhere outside it (chat blank space, sidebar, etc.) collapses it.
-function archiveOutside(e) {
-  const wrap = document.getElementById("archive-list-wrap");
-  const toggle = document.getElementById("archive-toggle");
-  if (wrap && wrap.contains(e.target)) return;        // clicking an archived item (restore / delete) keeps it open
-  if (toggle && toggle.contains(e.target)) return;    // the toggle handles its own collapse via onclick
-  collapseArchive();
-}
-function collapseArchive() {
-  document.removeEventListener("mousedown", archiveOutside, true);
-  if (!archiveOpen) return;
-  archiveOpen = false; renderArchive();
-}
-function setArchiveOpen(open) {
-  document.removeEventListener("mousedown", archiveOutside, true);
-  archiveOpen = open;
-  if (open) setTimeout(() => document.addEventListener("mousedown", archiveOutside, true), 0);   // skip the click that opened it
-  renderArchive();
-}
+/* ===================== Archive (recycle bin for deleted conversations) — managed in 设置 → 数据 ===================== */
 function archiveConversation(c) {
   state.conversations = state.conversations.filter(x => x.id !== c.id);
   state.archived = state.archived || [];
@@ -1410,7 +1423,7 @@ async function deleteArchived(id) {
   });
   if (!ok) return;
   state.archived = state.archived.filter(x => x.id !== id);
-  save(); renderArchive();
+  save(); renderArchiveSettings();
 }
 async function clearAllArchived() {
   const arr = state.archived || [];
@@ -1423,28 +1436,22 @@ async function clearAllArchived() {
   if (!ok) return;
   const backup = state.archived.slice();   // 即便确认了，也留个短时撤销缓冲（这是最危险的批量清空）
   state.archived = [];
-  save(); renderArchive();
-  toast("已清空 " + backup.length + " 个已归档对话", { label: "撤销", fn: () => { state.archived = backup.concat(state.archived || []); save(); renderArchive(); } });
+  save(); renderArchiveSettings();
+  toast("已清空 " + backup.length + " 个已归档对话", { label: "撤销", fn: () => { state.archived = backup.concat(state.archived || []); save(); renderArchiveSettings(); } });
 }
-function renderArchive() {
-  requestAnimationFrame(updateConvListFade);
-  const toggle = document.getElementById("archive-toggle");
-  const wrap = document.getElementById("archive-list-wrap");
-  if (!toggle || !wrap) return;
-  toggle.innerHTML = ""; wrap.innerHTML = "";
+// The archived list now lives in 设置 → 数据 (always-expanded). The sidebar no longer hosts it.
+function renderArchiveSettings() {
+  const box = document.getElementById("data-archive");
+  if (!box) return;
+  box.innerHTML = "";
   const arr = state.archived || [];
-  if (!arr.length) { archiveOpen = false; document.removeEventListener("mousedown", archiveOutside, true); return; }   // empty toggle is hidden via :empty
-  toggle.classList.toggle("open", archiveOpen);
-  toggle.innerHTML = '<span class="arch-caret">▸</span><span class="arch-ico">' + ic("trash", 14) + '</span><span class="arch-title">已归档</span><span class="arch-count"></span>';
-  toggle.querySelector(".arch-count").textContent = arr.length;
-  toggle.onclick = () => setArchiveOpen(!archiveOpen);
-  if (!archiveOpen) return;
+  if (!arr.length) { box.innerHTML = '<div class="arch-empty">没有已归档的对话。删除对话时会先移到这里（软删除），可随时恢复。</div>'; return; }
   const head = document.createElement("div"); head.className = "arch-head";
   head.innerHTML = '<span class="arch-head-label"></span>' +
     '<button class="arch-clear" title="清空全部已归档">' + ic("trash", 13) + '<span>全部删除</span></button>';
   head.querySelector(".arch-head-label").textContent = "共 " + arr.length + " 项";
   head.querySelector(".arch-clear").onclick = (e) => { e.stopPropagation(); clearAllArchived(); };
-  wrap.appendChild(head);
+  box.appendChild(head);
   arr.forEach(c => {
     const el = document.createElement("div"); el.className = "arch-item";
     el.innerHTML = '<span class="title"></span>' +
@@ -1455,8 +1462,211 @@ function renderArchive() {
     el.onclick = () => restoreConversation(c.id);
     el.querySelector(".rest").onclick = (e) => { e.stopPropagation(); restoreConversation(c.id); };
     el.querySelector(".purge").onclick = (e) => { e.stopPropagation(); deleteArchived(c.id); };
-    wrap.appendChild(el);
+    box.appendChild(el);
   });
+}
+
+/* ===================== Profile (name + avatar) & home greeting ===================== */
+// The faceted brand crystal as standalone markup (graded opacities, currentColor) — used as the home logo
+// when no profile is set, and as a small badge on the avatar when one is.
+const EMPTY_CRYSTAL_POLYS =
+    '<polygon points="7,8.5 10.2,8.5 10.2,15.5 7,15.5" fill="currentColor" opacity=".72"/>'
+  + '<polygon points="10.2,8.5 13.8,8.5 13.8,15.5 10.2,15.5" fill="currentColor" opacity=".82"/>'
+  + '<polygon points="13.8,8.5 17,8.5 17,15.5 13.8,15.5" fill="currentColor" opacity=".46"/>'
+  + '<polygon points="12,3 7,8.5 10.2,8.5" fill="currentColor" opacity=".86"/>'
+  + '<polygon points="12,3 10.2,8.5 13.8,8.5" fill="currentColor" opacity=".96"/>'
+  + '<polygon points="12,3 13.8,8.5 17,8.5" fill="currentColor" opacity=".56"/>'
+  + '<polygon points="12,21 7,15.5 10.2,15.5" fill="currentColor" opacity=".62"/>'
+  + '<polygon points="12,21 10.2,15.5 13.8,15.5" fill="currentColor" opacity=".5"/>'
+  + '<polygon points="12,21 13.8,15.5 17,15.5" fill="currentColor" opacity=".36"/>';
+function crystalSvg(size) { return '<svg viewBox="0 0 24 24" width="' + size + '" height="' + size + '" class="empty-crystal" aria-hidden="true">' + EMPTY_CRYSTAL_POLYS + '</svg>'; }
+function greetingFor(d) {
+  const h = d.getHours();
+  if (h >= 5 && h < 11) return "早上好";
+  if (h >= 11 && h < 13) return "中午好";
+  if (h >= 13 && h < 18) return "下午好";
+  if (h >= 18 && h < 23) return "晚上好";
+  return "夜深了";
+}
+// Initials for the no-photo avatar: two latin words → their initials; a single token → its first char (CJK) or letter.
+function profileInitials() {
+  const n = ((state.settings.profile && state.settings.profile.name) || "").trim();
+  if (!n) return "";
+  const parts = n.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  const t = parts[0];
+  return /[㐀-鿿぀-ヿ가-힯]/.test(t) ? t.slice(0, 1) : t.slice(0, 1).toUpperCase();   // CJK/kana/hangul → first char; latin → first letter
+}
+// Home greeting + avatar: photo > initials (both carry a small crystal badge) > the plain crystal logo.
+function renderEmptyGreeting() {
+  const g = document.getElementById("empty-greeting");
+  const av = document.getElementById("empty-avatar");
+  const cta = document.getElementById("empty-name-cta");
+  if (!g || !av) return;
+  const name = ((state.settings.profile && state.settings.profile.name) || "").trim();
+  const greet = greetingFor(new Date());
+  g.textContent = name ? (greet + "，" + name) : greet;
+  av.className = "logo-only"; av.innerHTML = crystalSvg(70);   // 主页只展示 Quartz 水晶 + 问候行（头像放在侧栏/设置）
+  if (cta) cta.hidden = !!name;   // 没设名字 → 提示「给自己起个名字」
+}
+// Sidebar footer profile: avatar + name (left), opens settings. Shows even with nothing set (a "设置名字" prompt).
+function renderSidebarProfile() {
+  const btn = document.getElementById("sidebar-profile");
+  if (!btn) return;
+  const av = btn.querySelector(".sp-avatar"), nm = btn.querySelector(".sp-name");
+  if (!av || !nm) return;
+  const p = state.settings.profile || {};
+  const name = (p.name || "").trim();
+  av.innerHTML = ""; av.classList.remove("is-empty");
+  if (p.avatar) { const img = document.createElement("img"); img.src = p.avatar; img.alt = ""; av.appendChild(img); }
+  else if (name) { const s = document.createElement("span"); s.className = "av-ini"; s.textContent = profileInitials(); av.appendChild(s); }
+  else { av.classList.add("is-empty"); av.innerHTML = ic("user", 15); }
+  nm.textContent = name || "设置名字";
+  nm.classList.toggle("muted", !name);
+  btn.title = name ? ("个人资料：" + name) : "设置名字和头像";
+}
+// Settings avatar editor preview: photo > initials > an "upload" affordance.
+function renderProfileSettings() {
+  const btn = document.getElementById("set-avatar-btn");
+  const rm = document.getElementById("set-avatar-remove");
+  if (!btn) return;
+  const p = state.settings.profile || {};
+  btn.innerHTML = "";
+  if (p.avatar) { const img = document.createElement("img"); img.src = p.avatar; img.alt = ""; btn.appendChild(img); }
+  else { const ini = profileInitials(); if (ini) { const s = document.createElement("span"); s.className = "av-ini"; s.textContent = ini; btn.appendChild(s); } else btn.innerHTML = ic("edit", 16); }
+  if (rm) rm.hidden = !p.avatar;
+}
+async function setAvatarFromFile(file) {
+  if (!file || !file.type.startsWith("image/")) { toast("请选择图片文件"); return; }
+  try {
+    state.settings.profile.avatar = await downscaleImage(file, 256, 0.85);   // 头像无需大图，降采样到 256
+    save(); renderProfileSettings(); renderEmptyGreeting(); renderSidebarProfile();
+  } catch (e) { toast("读取头像失败"); }
+}
+
+/* ===================== 统计页：token 用量图 + AI 小结报告 ===================== */
+let statsRange = "1m";   // 1m（默认）| 1y — 都用 GitHub 式格点图，只是范围不同
+const DAY_MS = 86400000;
+function renderStats() { renderStatsGraph(); renderStatsTiles(); renderStatsReport(); }
+// Summary tiles beside the heatmap: today / last-30-days / this-week-vs-last / daily average.
+function renderStatsTiles() {
+  const box = document.getElementById("stats-tiles"); if (!box) return;
+  const daily = (state.stats && state.stats.daily) || {}, dcost = (state.stats && state.stats.dailyCost) || {};
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const tokAt = (d) => daily[dayKey(d)] || 0, costAt = (d) => dcost[dayKey(d)] || 0;
+  const todayTok = tokAt(today), todayCost = costAt(today);
+  let m30t = 0, m30c = 0, activeDays = 0;
+  for (let i = 0; i < 30; i++) { const d = new Date(today.getTime() - i * DAY_MS); const t = tokAt(d); if (t > 0) { m30t += t; activeDays++; } m30c += costAt(d); }
+  let w0 = 0, w1 = 0;
+  for (let i = 0; i < 7; i++) w0 += tokAt(new Date(today.getTime() - i * DAY_MS));
+  for (let i = 7; i < 14; i++) w1 += tokAt(new Date(today.getTime() - i * DAY_MS));
+  const avg = activeDays ? Math.round(m30t / activeDays) : 0;
+  let weekSub;
+  if (w1 <= 0) weekSub = w0 > 0 ? "上周无记录" : "—";
+  else { const d = Math.round((w0 - w1) / w1 * 100); weekSub = (d >= 0 ? "↑ " : "↓ ") + Math.abs(d) + "% 对比上周"; }
+  const tiles = [
+    { label: "今日", value: fmtTok(todayTok), unit: "tok", sub: todayCost > 0 ? fmtCost(todayCost) : "" },
+    { label: "近 30 天", value: fmtTok(m30t), unit: "tok", sub: m30c > 0 ? fmtCost(m30c) : (activeDays + " 天活跃") },
+    { label: "本周", value: fmtTok(w0), unit: "tok", sub: weekSub },
+    { label: "活跃日均", value: fmtTok(avg), unit: "tok", sub: m30c > 0 && activeDays ? (fmtCost(m30c / activeDays) + "/天") : "" },
+  ];
+  box.innerHTML = "";
+  tiles.forEach(t => {
+    const el = document.createElement("div"); el.className = "stat-tile";
+    const lab = document.createElement("div"); lab.className = "st-label"; lab.textContent = t.label;
+    const val = document.createElement("div"); val.className = "st-value"; val.textContent = t.value;
+    const u = document.createElement("span"); u.className = "st-unit"; u.textContent = " " + t.unit; val.appendChild(u);
+    el.append(lab, val);
+    if (t.sub) { const sub = document.createElement("div"); sub.className = "st-sub"; sub.textContent = t.sub; el.appendChild(sub); }
+    box.appendChild(el);
+  });
+}
+function renderStatsGraph() {
+  const box = document.getElementById("stats-graph"); if (!box) return;
+  setSeg("stats-range-seg", statsRange);
+  renderHeatmap(box, statsRange === "1y" ? 52 : 4);   // 1 年 ≈ 53 列；1 个月 ≈ 5 列（格子更大）
+}
+// Heatmap (green) of daily total tokens, ANCHORED TO TODAY: top-right cell = today, going down = older
+// (today, -1 … -6 down the rightmost column), columns to the left are older 7-day blocks. Every column is a
+// full 7 days, so there's never a half-filled "protruding" current week (unlike a Sun–Sat calendar grid).
+function renderHeatmap(box, weeksBack) {
+  const isMonth = weeksBack < 52;
+  box.className = "stats-graph" + (isMonth ? " hm-month" : "");
+  box.innerHTML = "";
+  const daily = (state.stats && state.stats.daily) || {};
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const N = weeksBack + 1;                                    // columns; rightmost = the 7 most recent days
+  const dayBack = (offset) => new Date(today.getTime() - offset * DAY_MS);
+  let max = 0;
+  for (let i = 0; i < N * 7; i++) { const v = daily[dayKey(dayBack(i))] || 0; if (v > max) max = v; }
+  const level = (v) => { if (!v) return 0; if (max <= 0) return 1; const r = v / max; return r > 0.66 ? 4 : r > 0.33 ? 3 : r > 0.1 ? 2 : 1; };
+  const MON = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+  const months = document.createElement("div"); months.className = "cg-months"; months.style.gridTemplateColumns = "repeat(" + N + ", var(--cg-cell))";
+  let lastMonth = -1;
+  for (let c = 0; c < N; c++) {                              // label each column by the month of its TOP (newest) cell
+    const m = dayBack((N - 1 - c) * 7).getMonth();
+    if (m !== lastMonth) { const s = document.createElement("span"); s.textContent = MON[m]; s.style.gridColumnStart = c + 1; months.appendChild(s); lastMonth = m; }
+  }
+  const grid = document.createElement("div"); grid.className = "cg-grid"; grid.style.gridTemplateColumns = "repeat(" + N + ", var(--cg-cell))";
+  let total = 0, activeDays = 0;
+  for (let c = 0; c < N; c++) {                              // column-major (matches grid-auto-flow:column); rightmost col, top row = today
+    for (let r = 0; r < 7; r++) {
+      const d = dayBack((N - 1 - c) * 7 + r);
+      const v = daily[dayKey(d)] || 0;
+      if (v > 0) { total += v; activeDays++; }
+      const cell = document.createElement("div"); cell.className = "cg-cell lv" + level(v);
+      cell.title = dayKey(d) + "：" + (v ? fmtTok(v) + " tokens" : "无");
+      grid.appendChild(cell);
+    }
+  }
+  box.appendChild(months); box.appendChild(grid);
+  appendStatsFooter(box, (isMonth ? "最近一个月" : "最近一年") + "共 " + fmtTok(total) + " tokens · " + activeDays + " 天有使用", true);
+}
+function appendStatsFooter(box, summaryText, withLegend) {
+  const sum = document.createElement("div"); sum.className = "cg-summary"; sum.textContent = summaryText;
+  box.appendChild(sum);
+  if (withLegend) {
+    const legend = document.createElement("div"); legend.className = "cg-legend";
+    legend.innerHTML = '<span class="cg-leg-t">少</span><span class="cg-cell lv0"></span><span class="cg-cell lv1"></span><span class="cg-cell lv2"></span><span class="cg-cell lv3"></span><span class="cg-cell lv4"></span><span class="cg-leg-t">多</span>';
+    box.appendChild(legend);
+  }
+}
+function renderStatsReport() {
+  const out = document.getElementById("stats-report");
+  const meta = document.getElementById("stats-report-meta");
+  const btn = document.getElementById("stats-report-gen");
+  const r = state.stats && state.stats.report;
+  if (out) { out.innerHTML = (r && r.text) ? renderMarkdown(r.text) : ""; out.style.display = (r && r.text) ? "" : "none"; }
+  if (meta) meta.textContent = (r && r.generatedAt) ? ("生成于 " + relTime(r.generatedAt) + " · 基于 " + (r.count || 0) + " 个对话标题") : "";
+  if (btn && !btn.disabled) btn.textContent = (r && r.text) ? "重新生成" : "生成小结";
+}
+async function generateStatsReport() {
+  const ref = state.settings.defaults.chat || nextModel;
+  if (!ref || !ref.model) { openSettings("services"); toast("请先添加一个模型"); return; }
+  if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置该模型的 API Key"); return; }
+  const all = (state.conversations || []).concat(state.archived || []).filter(c => c.messages && c.messages.length);
+  const titles = all.map(c => ({ t: (c.title || "").trim(), ts: convTime(c) }))
+    .filter(x => x.t && x.t !== "新对话").sort((a, b) => b.ts - a.ts).map(x => x.t);
+  if (!titles.length) { toast("还没有可分析的对话"); return; }
+  const list = titles.slice(0, 250).join("\n").slice(0, 4000);
+  const sys = "你是一个善于洞察的分析助手。下面是某人在 AI 对话工具里产生的一系列对话标题（按时间从新到旧）。请据此写一份简短、真诚、有洞察的「使用小结」：他最近在关注或推进哪些主题、有哪些兴趣或正在做的项目、使用上有什么特点或倾向。要求：用第二人称「你」、中文、markdown；可先一句总括，再分 3–5 个小点；只基于这些标题归纳，不要罗列标题原文、不要编造没有依据的细节；克制、不浮夸。180–320 字。";
+  const btn = document.getElementById("stats-report-gen");
+  const out = document.getElementById("stats-report");
+  const meta = document.getElementById("stats-report-meta");
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  if (meta) meta.textContent = "";
+  if (out) { out.style.display = ""; out.innerHTML = '<span class="dim">正在读你的对话标题、归纳中…</span>'; }
+  try {
+    let acc = "";
+    const r = await streamChat(ref, { system: sys, messages: [{ role: "user", content: "【对话标题】\n" + list }] }, {
+      temp: 0.7, maxTokens: 800, reasoning: false,
+      onDelta: (t) => { acc = t; if (out) out.innerHTML = renderMarkdown(t); },
+    });
+    const text = (r.text || acc || "").trim();
+    if (!text) { toast("没有生成内容，请重试"); if (out) { out.innerHTML = ""; out.style.display = "none"; } }
+    else { state.stats = state.stats || { daily: {} }; state.stats.report = { text, generatedAt: Date.now(), count: titles.length }; save(); }
+  } catch (e) { toast("生成失败：" + (e.message || e)); }
+  finally { if (btn) btn.disabled = false; renderStatsReport(); }
 }
 
 const EMPTY_GUIDES = [
@@ -1483,10 +1693,11 @@ function renderEmptyGuide() {
     wrap.appendChild(card);
   });
 }
-// Empty-home hint + example guide; reflects whether any provider has a key (refreshed live when a key is added).
+// Empty-home greeting + hint + example guide; reflects whether any provider has a key (refreshed live when a key is added).
 function updateEmptyHint() {
   const h = document.getElementById("empty-hint");
-  if (h) h.textContent = anyKey() ? "输入下方消息框，或点选下面的示例开始" : "先到设置里填入任意一个模型提供方的 API Key";
+  if (h) { const k = anyKey(); h.textContent = k ? "" : "先到设置里填入任意一个模型提供方的 API Key"; h.style.display = k ? "none" : ""; }   // 有 Key 就不再多那行提示
+  renderEmptyGreeting();
   renderEmptyGuide();
 }
 /* ===================== Export current conversation ===================== */
@@ -1992,7 +2203,7 @@ function enhanceCode(scope) {
   });
 }
 
-function renderAll() { applySidebar(); renderSidebar(); renderMessages(); }
+function renderAll() { applySidebar(); renderSidebar(); renderMessages(); renderSidebarProfile(); renderArchiveSettings(); }
 
 /* ===================== Conversation node minimap (top-left of chat) ===================== */
 // the assistant reply that belongs to the user message at userIndex (null if none yet)
@@ -2590,14 +2801,17 @@ async function runCompletion(conv, opts) {
   const reasoningBody = row.querySelector(".reasoning-body");
   renderAnswer(contentEl, cont != null ? renderMarkdown(contBase) : "", true);
 
-  // Auto-scroll the streaming reply, but STOP once the user's prompt reaches ~20% from the top (it stays
-  // visible with the answer filling in below it). Start at the bottom — no jarring jump — and let
-  // applyAutoScroll ease toward min(pinTop, maxScroll): follows the bottom until the prompt hits 20%, then holds.
+  // Auto-scroll the streaming reply, but STOP once the prompt↔answer boundary reaches ~20% from the top
+  // (the answer then fills the lower ~80%). We pin the ANSWER'S TOP — not the prompt's top — so a long prompt
+  // scrolls its opening off the top instead of filling the screen and shoving the answer below the fold.
+  // Start at the bottom — no jarring jump — and let applyAutoScroll ease toward min(pinTop, maxScroll):
+  // follow the bottom until the boundary hits 20%, then hold.
   box.classList.add("streaming");
   if (at == null && cont == null) {
     let ur = row ? row.previousElementSibling : null;
     while (ur && !ur.classList.contains("msg-row")) ur = ur.previousElementSibling;
-    pinTop = ur ? Math.max(0, ur.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
+    // row.offsetTop == bottom of the user row == the conceptual prompt/answer separator (adjacent siblings, no margin)
+    pinTop = ur ? Math.max(0, row.offsetTop - Math.round(box.clientHeight * 0.2)) : null;
     box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop;
   } else {
     pinTop = null;   // in-place regenerate: stream where the answer already sits, don't move the viewport
@@ -2676,6 +2890,7 @@ async function runCompletion(conv, opts) {
       cost: (ou.cost != null || usage.cost != null) ? ((ou.cost || 0) + (usage.cost || 0)) : undefined,
     } : usage;
   }
+  if (usage) recordDailyUsage(usage);   // 计入「每日 token」统计（贡献图）
   if (errInfo) last.error = errInfo; else delete last.error;   // structured error → inline error block + 重试
   if (aborted) {
     last.stopped = true;   // 被中断的回答 → 操作栏出现「继续」
@@ -3141,7 +3356,8 @@ function switchSection(sec) {
     const om = document.getElementById("set-openmain-shortcut");
     if (om) om.textContent = fmtAccel(state.settings.quick.openMainShortcut || defaultOpenMain());
   }
-  if (sec === "data") fillDataStats();
+  if (sec === "stats") renderStats();
+  if (sec === "data") { fillDataStats(); renderArchiveSettings(); }
   if (sec === "about") { fillAbout(); aboutCheckUpdate(); }
 }
 
@@ -3422,6 +3638,8 @@ function fillSettings() {
   const ps = document.getElementById("proxy-test-status"); if (ps) { ps.textContent = ""; ps.className = "key-test-status"; }
   // general
   const g = state.settings.general || {};
+  const un = document.getElementById("set-username"); if (un) un.value = (state.settings.profile && state.settings.profile.name) || "";
+  renderProfileSettings();
   setToggle("set-restorelast-tog", g.restoreLast !== false);
   setSeg("set-sidebarsort-seg", g.sidebarSort === "created" ? "created" : "updated");
   fillBackupList();   // 数据页的「从自动备份恢复」下拉（异步填充）
@@ -3490,7 +3708,7 @@ async function testProvider(pk, btn, status) {
 
 // ---- settings: nav icons + instant-apply wiring; called once at boot ----
 function decorateSettingsNav() {
-  const map = { general: "gear", services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", network: "globe", data: "database", about: "info" };
+  const map = { general: "gear", stats: "chart", services: "cube", prompts: "chat", appearance: "sun", defaults: "sliders", quick: "zap", shortcuts: "command", network: "globe", data: "database", about: "info" };
   document.querySelectorAll("#modal-nav .nav-item").forEach(b => {
     const name = map[b.dataset.sec];
     if (name && !b.querySelector(".ic")) b.insertAdjacentHTML("afterbegin", ic(name, 16));
@@ -3542,6 +3760,14 @@ function setupSettingsLive() {
   bindToggle("set-autoupdate-tog", on => { if (window.chatbox && window.chatbox.setAutoUpdate) window.chatbox.setAutoUpdate(on); });
   bindToggle("set-restorelast-tog", on => { state.settings.general.restoreLast = on; save(); });
   bindSeg("set-sidebarsort-seg", v => { state.settings.general.sidebarSort = (v === "created") ? "created" : "updated"; save(); renderSidebar(); });
+  // ---- profile: name + avatar ----
+  { const un = document.getElementById("set-username");
+    if (un) un.addEventListener("input", () => { state.settings.profile.name = un.value; save(); renderProfileSettings(); renderEmptyGreeting(); renderSidebarProfile(); });
+    const ab = document.getElementById("set-avatar-btn"), ai = document.getElementById("avatar-input");
+    if (ab && ai) ab.onclick = () => ai.click();
+    if (ai) ai.onchange = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) setAvatarFromFile(f); };
+    const ar = document.getElementById("set-avatar-remove");
+    if (ar) ar.onclick = (e) => { e.preventDefault(); state.settings.profile.avatar = ""; save(); renderProfileSettings(); renderEmptyGreeting(); renderSidebarProfile(); }; }
   { const sg = document.getElementById("set-show-guide"); if (sg) sg.onclick = openGuide; }
   bindSeg("set-quick-prompt-seg", v => { state.settings.quick.promptMode = v; toggleConciseField(); save(); });
   (function () {
@@ -4069,6 +4295,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.getElementById("open-settings").onclick = () => openSettings();
+{ const sa = document.getElementById("sidebar-profile"); if (sa) sa.onclick = () => openSettings("stats"); }
+{ const enc = document.getElementById("empty-name-cta"); if (enc) enc.onclick = () => openSettings("general"); }
+{ const sg = document.getElementById("stats-report-gen"); if (sg) sg.onclick = generateStatsReport; }
+bindSeg("stats-range-seg", v => { statsRange = v; renderStatsGraph(); });
 document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "modal-bg") closeSettings(); };
 document.querySelectorAll("#modal-nav .nav-item").forEach(b => b.onclick = () => switchSection(b.dataset.sec));
 bindSettingsSearch();
@@ -4340,7 +4570,7 @@ function renderUpdatePill(s) {
   let show = st === "ready" || st === "downloading" || st === "error" || st === "available";
   if (show && s && s.version && s.version === dismissedUpdate) show = false;   // 用户在角落关过这个版本 → 本会话不再弹（设置里仍照常显示、可更新）
   notice.hidden = !show;
-  if (footer) footer.classList.toggle("has-update", show);   // hide 已归档, show the notice in its place
+  if (footer) footer.classList.toggle("has-update", show);   // hide the profile row, show the update notice in its place
   if (show) {
     notice.className = ""; if (bar) bar.hidden = true;
     if (main) main.onclick = null;
@@ -4441,6 +4671,7 @@ function applySeed(seed) {
   }
   state = await loadState();
   try { if (window.chatbox && window.chatbox.getSeedConfig) applySeed(await window.chatbox.getSeedConfig()); } catch (e) {}
+  backfillDailyStats(); save();   // one-time: seed the token heatmap from existing conversations (approximate history)
   nextModel = clone(state.settings.defaults.chat);
   nextPromptId = state.settings.defaults.promptId || null;
   if (state.settings.general && state.settings.general.restoreLast === false) state.currentId = null;   // start on a fresh new chat each launch
