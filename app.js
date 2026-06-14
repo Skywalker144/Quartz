@@ -589,8 +589,10 @@ function onProviderConnected(pk) {
   } else {
     // other providers: make their suggested models one-click available (added below in the chips UI)
   }
+  // 轻量刷新：只更新「服务商圆点 / 已启用模型 / 模型列表」，不重建 #ms-key 输入框——
+  // 否则会在用户刚输入完 key、焦点还在框里时把输入框换掉（丢焦点），或吞掉随后点「检测」的点击。
   const sec = document.querySelector('#modal-sections section[data-sec="services"]');
-  if (sec && !sec.classList.contains("hidden")) renderServices();
+  if (sec && !sec.classList.contains("hidden")) { renderMsProviders(); renderMsEnabled(pk); renderMsList(pk, ""); }
   populateQuickModelSelect();
 }
 
@@ -2160,7 +2162,14 @@ function mathFromBare(raw) {
   return out;
 }
 
-function enhanceCode(scope) {
+// opts.highlight / opts.math (both default true): while a code fence is still streaming (open), the caller
+// passes false so hljs / 公式救回 don't churn over half-written code every chunk. The WRAP step (header bar
+// + copy button) ALWAYS runs — that's what gives the block its height, so keeping it present from the first
+// chunk (rather than popping it in when the fence finally closes) stops the block from「跳动」mid-stream.
+function enhanceCode(scope, opts) {
+  opts = opts || {};
+  const doHighlight = opts.highlight !== false;
+  const doMath = opts.math !== false;
   // Capture each fence's EXPLICIT language (from the ``` info string, set by marked as `language-xxx`)
   // BEFORE hljs runs — auto-highlight overwrites the class with its best guess, and an unlabeled fence
   // (e.g. an LLM dumping a bare formula) would otherwise get mislabeled "INI" / "Perl". No tag → "code".
@@ -2168,7 +2177,8 @@ function enhanceCode(scope) {
     if (code.dataset.lang == null) { const m = (code.className || "").match(/\blanguage-([\w+#.-]+)/i); code.dataset.lang = m ? m[1] : ""; }
   });
   // Rescue bare formulas: an unlabeled fence that is clearly LaTeX becomes math, not a code block.
-  scope.querySelectorAll("pre > code").forEach(code => {
+  // Only at completion (doMath) — never on a half-streamed fence, whose partial text could look like math.
+  if (doMath) scope.querySelectorAll("pre > code").forEach(code => {
     const pre = code.parentElement;
     if (!pre || code.dataset.lang) return;                                   // only no-language fences
     if (pre.parentElement && pre.parentElement.classList.contains("code-block")) return;
@@ -2179,7 +2189,7 @@ function enhanceCode(scope) {
     const div = document.createElement("div"); div.className = "math-bare"; div.innerHTML = html;
     pre.replaceWith(div);
   });
-  if (window.hljs) scope.querySelectorAll("pre > code").forEach(code => {
+  if (doHighlight && window.hljs) scope.querySelectorAll("pre > code").forEach(code => {
     if (!code.dataset.highlighted) { try { hljs.highlightElement(code); } catch (e) {} }
   });
   scope.querySelectorAll("pre").forEach(pre => {
@@ -2858,8 +2868,8 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); if ((full.match(/```/g) || []).length % 2 === 0) enhanceCode(contentEl); /* 围栏未闭合（代码还在写）就先不高亮——否则每个 chunk 反复重建+高亮整段代码会卡；闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); if ((rt.match(/```/g) || []).length % 2 === 0) enhanceCode(reasoningBody); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); const cl = (full.match(/```/g) || []).length % 2 === 0; enhanceCode(contentEl, { highlight: cl, math: cl }); /* 始终套代码外框（含头栏，稳住块高度、流式中不跳动）；围栏未闭合（代码还在写）时先不高亮/不救回公式——闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
+      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rcl = (rt.match(/```/g) || []).length % 2 === 0; enhanceCode(reasoningBody, { highlight: rcl, math: rcl }); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
     });
     acc = r.text || ""; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
@@ -3323,7 +3333,7 @@ function confirmEffort() { closeEffortPop(); }
 /* ===================== Settings ===================== */
 let orCatalog = []; // cached OpenRouter model catalog [{id, name}]
 
-function openSettings(section) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "general"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); requestAnimationFrame(() => { if (ss) ss.focus(); }); }
+function openSettings(section, focusId) { fillSettings(); const ss = document.getElementById("set-search"); if (ss) ss.value = ""; filterSettingsNav(""); switchSection(section || (state && state.settings.lastSection) || "general"); document.getElementById("modal-bg").classList.add("show"); syncTitleBarOverlay(); requestAnimationFrame(() => { const t = focusId ? document.getElementById(focusId) : null; if (t) { t.focus(); if (t.select) t.select(); } else { const md = document.getElementById("modal"); if (md) md.focus(); } }); }   // 默认只把焦点落在弹窗本身（保证 Esc/Tab 生效），不自动聚焦搜索框
 // Keep Tab focus inside a modal (a dialog the user can't Tab out of). Cycles among the visible focusable
 // descendants; hidden sections (display:none) are skipped automatically (offsetParent === null).
 function trapTab(container, e) {
@@ -3958,13 +3968,18 @@ function renderMsDetail() {
     + '<input id="ms-search" class="ms-search" placeholder="搜索模型…" hidden>'
     + '<div id="ms-list" class="or-list"></div>';
   const keyEl = box.querySelector("#ms-key"); keyEl.value = key || "";
-  keyEl.addEventListener("input", () => {
-    const had = !!keyOf({ provider: pk });
+  let connected = !!key;   // 打开面板时该服务商是否已配置过 key（已配置则不再触发「已接入」副作用）
+  keyEl.addEventListener("input", () => {   // 实时保存，但不在这里触发「已接入」——否则敲第一个字符就误报成功
     state.settings.providers[pk] = { key: keyEl.value.trim() };
-    renderMsProviders();
-    if (!had && keyEl.value.trim()) onProviderConnected(pk);
+    renderMsProviders();   // 左栏圆点实时反映「已填 key」
     save();
   });
+  // 「已接入」副作用（接入默认模型 + 成功提示）只在输入完成（失焦 / 回车）且 key 长度像样时触发一次。
+  keyEl.addEventListener("change", () => {
+    const v = keyEl.value.trim();
+    if (v && !connected && v.length >= 16) { connected = true; onProviderConnected(pk); }
+  });
+  keyEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); keyEl.blur(); } });   // 回车 = 提交并移走焦点（blur 会触发上面的 change → 接入）
   const eye = box.querySelector("#ms-eye");
   eye.onclick = () => { const s = keyEl.type === "password"; keyEl.type = s ? "text" : "password"; eye.innerHTML = ic(s ? "eye-off" : "eye", 16); };
   box.querySelector("#ms-test").onclick = (e) => testProvider(pk, e.currentTarget, box.querySelector("#ms-teststat"));
@@ -4295,8 +4310,12 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.getElementById("open-settings").onclick = () => openSettings();
-{ const sa = document.getElementById("sidebar-profile"); if (sa) sa.onclick = () => openSettings("stats"); }
-{ const enc = document.getElementById("empty-name-cta"); if (enc) enc.onclick = () => openSettings("general"); }
+{ const sa = document.getElementById("sidebar-profile"); if (sa) sa.onclick = () => {
+    const named = ((state.settings.profile && state.settings.profile.name) || "").trim();
+    if (named) openSettings("stats");                       // 已设名字 → 个人资料/统计页
+    else openSettings("general", "set-username");           // 未设名字（「设置名字」）→ 常规页并聚焦名字输入框
+  }; }
+{ const enc = document.getElementById("empty-name-cta"); if (enc) enc.onclick = () => openSettings("general", "set-username"); }
 { const sg = document.getElementById("stats-report-gen"); if (sg) sg.onclick = generateStatsReport; }
 bindSeg("stats-range-seg", v => { statsRange = v; renderStatsGraph(); });
 document.getElementById("modal-bg").onclick = (e) => { if (e.target.id === "modal-bg") closeSettings(); };
@@ -4472,8 +4491,11 @@ document.addEventListener("mouseup", () => { if (resizing) { resizing = false; d
     let rightLimit = window.innerWidth - 8;
     const wco = navigator.windowControlsOverlay;
     if (wco && wco.visible) {
-      let capLeft = window.innerWidth - 140, capBottom = 48;
-      try { const bar = wco.getTitlebarAreaRect(); if (bar && bar.width > 0) { capLeft = bar.x + bar.width; capBottom = bar.y + bar.height; } } catch (e) {}
+      // 顶部右侧被原生「最小化 / 最大化 / 关闭」按钮覆盖；落在该带内的 tooltip 夹到按钮左侧，避免被遮挡。
+      // 兜底值取保守些（覆盖整条 ~60px 标题栏 + 余量）——某些 Windows 上 getTitlebarAreaRect 会给出偏小的
+      // 高度，导致刚好在带子下沿的 tooltip（如右上角计费提示）漏判而不夹，仍被按钮遮住一部分。
+      let capLeft = window.innerWidth - 160, capBottom = 64;
+      try { const bar = wco.getTitlebarAreaRect(); if (bar && bar.width > 0) { capLeft = bar.x + bar.width; capBottom = Math.max(capBottom, bar.y + bar.height); } } catch (e) {}
       if (top < capBottom) rightLimit = Math.min(rightLimit, capLeft - 8);
     }
     let left = r.left + r.width / 2 - tr.width / 2;
