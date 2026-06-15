@@ -611,7 +611,7 @@ svg.ic { display: block; flex-shrink: 0; }
 .edit-bar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
 /* Empty state */
-#empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 12px; padding-bottom: 3vh; }
+#empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); gap: 12px; padding-bottom: calc(var(--composer-h, 112px) + 3vh); }
 /* home avatar: crystal logo (no profile) / photo / initials — the latter two carry a small crystal brand badge */
 #empty-avatar { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; margin-bottom: 2px; }
 #empty-avatar.logo-only { line-height: 0; color: var(--crystal); opacity: .9; }
@@ -691,6 +691,12 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 #composer-inner { position: relative; z-index: 1; pointer-events: auto; max-width: calc(var(--content-width) + 52px); margin: 0 auto; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow-card); padding: 8px 10px; transition: border-color .15s; }
 #composer-inner.drag { border-color: var(--accent); border-style: dashed; }
 #composer-inner:focus-within { border-color: var(--focus-border); }
+/* draggable top edge — pull up to enlarge the input box (default auto-grows to 5 lines, then scrolls) */
+#composer-resizer { position: absolute; top: -9px; left: 18px; right: 18px; height: 14px; cursor: ns-resize; z-index: 3; touch-action: none; }
+#composer-resizer::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translateX(-50%) translateY(-50%); width: 34px; height: 3px; border-radius: 3px; background: var(--text-dim); opacity: 0; transition: opacity .14s; }
+#composer-resizer:hover::after, body.input-resizing #composer-resizer::after { opacity: .55; }
+body.input-resizing { cursor: ns-resize; user-select: none; }
+body.input-resizing #input { pointer-events: none; }
 #attach-row { display: none; flex-wrap: wrap; gap: 8px; padding: 4px 0 8px; }
 #composer-tools { display: flex; gap: 4px; padding: 0 0 3px; }
 .tool-btn { width: 30px; height: 30px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -786,7 +792,10 @@ kbd { font-family: inherit; font-size: 11px; background: var(--bg-elev); border:
 .ctx-sub { display: none; position: absolute; left: 100%; top: -6px; margin-left: -1px; min-width: 152px; max-height: 56vh; overflow-y: auto; }
 .ctx-item.has-sub:hover > .ctx-sub { display: block; }
 .flip-sub .ctx-sub { left: auto; right: 100%; margin-left: 0; margin-right: -1px; }
-#input { flex: 1; resize: none; border: none; background: transparent; color: var(--text); font-size: var(--font-size); line-height: 1.5; max-height: 220px; outline: none; font-family: inherit; padding: 4px 9px; }
+#input { flex: 1; resize: none; border: none; background: transparent; color: var(--text); font-size: var(--font-size); line-height: 1.5; max-height: 42vh; overflow-y: hidden; outline: none; font-family: inherit; padding: 4px 9px; }
+/* while only the placeholder shows (input empty) there's nothing real to select — block selection so the
+   hint text can't be dragged-over / highlighted; once you type, the rule drops and text selects normally */
+#input:placeholder-shown { user-select: none; -webkit-user-select: none; }
 #send { width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; border: none; background: transparent; color: var(--text-dim); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 20px; transition: color .15s, background .15s; }
 #send:hover { color: var(--text); background: var(--bg-soft); }
 /* nothing to send → clearly dim it (was an active-looking but no-op button) */

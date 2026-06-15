@@ -86,6 +86,7 @@ let undoSend = null;         // armed after Esc-stops a fresh send: a SECOND Esc
 let pending = [];        // composer attachments awaiting send
 const _drafts = new Map();    // conv id -> { text, pending } unsent composer draft, kept in memory only (never persisted)
 let composerConvId = null;    // which conversation's draft currently sits in the composer (for stash/restore on switch)
+let inputUserH = null;        // user-dragged input-box height (px floor); null = auto-grow to 5 lines then scroll
 let editingIndex = null; // index of message being edited inline
 let autoScroll = true;   // follow streaming output only while the user is at the bottom
 let pinTop = null;       // while answering: target scrollTop that keeps the user's message at the top
@@ -1858,6 +1859,7 @@ function syncComposerDraft() {
   pending = d ? d.pending.slice() : [];
   inp.value = d ? d.text : "";
   composerConvId = newId;
+  inputUserH = null;   // a manually-dragged input height belongs to the chat it was set in — don't carry it across
   autoGrow(); renderPending(); updateSendButton();
 }
 // Dim the send button when there's nothing to send (empty input + no attachments), so it no longer looks
@@ -2162,14 +2164,15 @@ function mathFromBare(raw) {
   return out;
 }
 
-// opts.highlight / opts.math (both default true): while a code fence is still streaming (open), the caller
-// passes false so hljs / 公式救回 don't churn over half-written code every chunk. The WRAP step (header bar
-// + copy button) ALWAYS runs — that's what gives the block its height, so keeping it present from the first
-// chunk (rather than popping it in when the fence finally closes) stops the block from「跳动」mid-stream.
+// opts.openTail: the LAST code fence is still streaming (unclosed). Every chunk re-renders the whole
+// message (innerHTML is replaced), so to avoid churn we highlight / 公式救回 EVERY block except that last
+// open one — already-closed blocks get re-coloured on every frame (so they never flicker on↔off), only the
+// half-written tail stays raw until its fence closes. The WRAP step (header bar + copy button) ALWAYS runs
+// for ALL blocks — that's what gives a block its height, so keeping it present from the first chunk (rather
+// than popping it in when the fence finally closes) stops the block from「跳动」mid-stream.
 function enhanceCode(scope, opts) {
   opts = opts || {};
-  const doHighlight = opts.highlight !== false;
-  const doMath = opts.math !== false;
+  const openTail = !!opts.openTail;
   // Capture each fence's EXPLICIT language (from the ``` info string, set by marked as `language-xxx`)
   // BEFORE hljs runs — auto-highlight overwrites the class with its best guess, and an unlabeled fence
   // (e.g. an LLM dumping a bare formula) would otherwise get mislabeled "INI" / "Perl". No tag → "code".
@@ -2177,8 +2180,10 @@ function enhanceCode(scope, opts) {
     if (code.dataset.lang == null) { const m = (code.className || "").match(/\blanguage-([\w+#.-]+)/i); code.dataset.lang = m ? m[1] : ""; }
   });
   // Rescue bare formulas: an unlabeled fence that is clearly LaTeX becomes math, not a code block.
-  // Only at completion (doMath) — never on a half-streamed fence, whose partial text could look like math.
-  if (doMath) scope.querySelectorAll("pre > code").forEach(code => {
+  // Skip the still-streaming tail fence — its partial text could momentarily look like math.
+  const mlist = [...scope.querySelectorAll("pre > code")];
+  mlist.forEach((code, i) => {
+    if (openTail && i === mlist.length - 1) return;
     const pre = code.parentElement;
     if (!pre || code.dataset.lang) return;                                   // only no-language fences
     if (pre.parentElement && pre.parentElement.classList.contains("code-block")) return;
@@ -2189,9 +2194,16 @@ function enhanceCode(scope, opts) {
     const div = document.createElement("div"); div.className = "math-bare"; div.innerHTML = html;
     pre.replaceWith(div);
   });
-  if (doHighlight && window.hljs) scope.querySelectorAll("pre > code").forEach(code => {
-    if (!code.dataset.highlighted) { try { hljs.highlightElement(code); } catch (e) {} }
-  });
+  // Highlight every block EXCEPT the still-streaming tail — re-colouring half-written code each chunk is
+  // what made the already-closed blocks above it flicker (highlight appearing then vanishing).
+  if (window.hljs) {
+    const codes = [...scope.querySelectorAll("pre > code")];
+    const skip = openTail ? codes.length - 1 : -1;
+    codes.forEach((code, i) => {
+      if (i === skip) return;
+      if (!code.dataset.highlighted) { try { hljs.highlightElement(code); } catch (e) {} }
+    });
+  }
   scope.querySelectorAll("pre").forEach(pre => {
     if (pre.parentElement && pre.parentElement.classList.contains("code-block")) return;
     const code = pre.querySelector("code");
@@ -2868,8 +2880,8 @@ async function runCompletion(conv, opts) {
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); const cl = (full.match(/```/g) || []).length % 2 === 0; enhanceCode(contentEl, { highlight: cl, math: cl }); /* 始终套代码外框（含头栏，稳住块高度、流式中不跳动）；围栏未闭合（代码还在写）时先不高亮/不救回公式——闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rcl = (rt.match(/```/g) || []).length % 2 === 0; enhanceCode(reasoningBody, { highlight: rcl, math: rcl }); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
+      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); const openTail = ((full.match(/```/g) || []).length % 2) === 1; enhanceCode(contentEl, { openTail }); /* 始终套代码外框（含头栏，稳住块高度、流式中不跳动）；围栏未闭合（代码还在写）时先不高亮/不救回公式——闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
+      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rOpen = ((rt.match(/```/g) || []).length % 2) === 1; enhanceCode(reasoningBody, { openTail: rOpen }); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
     });
     acc = r.text || ""; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
@@ -4134,7 +4146,53 @@ function renderPromptsList() {
 }
 
 /* ===================== Input UX ===================== */
-function autoGrow() { const ta = document.getElementById("input"); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 220) + "px"; }
+// Composer input box: auto-grow with the text. Default ceiling is 5 lines — past that it scrolls (a
+// scrollbar shows ONLY when the text truly overflows, never on empty space). Dragging the top edge sets
+// inputUserH: an EXACT manual height (text scrolls inside, so it never snaps to fit all the text), capped
+// at ~40vh. inputUserH is reset per conversation (see syncComposerDraft), so it isn't shared across chats.
+function _inputMetrics() {
+  const ta = document.getElementById("input"); const cs = getComputedStyle(ta);
+  const lh = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) * 1.5) || 22;
+  const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  return { lh, pad };
+}
+function inputFiveLines() { const m = _inputMetrics(); return Math.round(m.lh * 5 + m.pad); }
+function inputFloorMin() { const m = _inputMetrics(); return Math.round(m.lh + m.pad); }   // ~1 line
+function inputCeil() { return Math.round(window.innerHeight * 0.4); }
+function autoGrow() {
+  const ta = document.getElementById("input"); if (!ta) return;
+  ta.style.height = "auto";
+  const content = ta.scrollHeight;
+  const h = inputUserH != null
+    ? Math.max(inputFloorMin(), Math.min(inputUserH, inputCeil()))   // manual: EXACT dragged height, text scrolls inside
+    : Math.min(content, inputFiveLines());                           // default: grow up to 5 lines, then scroll
+  ta.style.height = h + "px";
+  ta.style.overflowY = content > h + 1 ? "auto" : "hidden";          // scrollbar only when the text actually overflows
+}
+// Keep the caret's line inside the visible part of the textarea — used while dragging the composer shorter/
+// taller so the line you're typing on never scrolls out of view. Measures the caret's pixel offset with a
+// cached hidden mirror that copies the textarea's wrapping (font / width / padding), then nudges scrollTop.
+let _caretMirror = null;
+function keepCaretVisible(ta) {
+  if (!ta || ta.selectionStart == null) return;
+  const cs = getComputedStyle(ta);
+  const m = _caretMirror || (_caretMirror = document.createElement("div"));
+  const s = m.style;
+  s.position = "absolute"; s.left = "-9999px"; s.top = "0"; s.visibility = "hidden";
+  s.whiteSpace = "pre-wrap"; s.overflowWrap = "break-word"; s.wordBreak = "break-word";
+  s.width = ta.clientWidth + "px"; s.boxSizing = cs.boxSizing;
+  s.fontFamily = cs.fontFamily; s.fontSize = cs.fontSize; s.fontWeight = cs.fontWeight; s.fontStyle = cs.fontStyle;
+  s.lineHeight = cs.lineHeight; s.letterSpacing = cs.letterSpacing;
+  s.paddingTop = cs.paddingTop; s.paddingRight = cs.paddingRight; s.paddingBottom = cs.paddingBottom; s.paddingLeft = cs.paddingLeft;
+  m.textContent = ta.value.slice(0, ta.selectionStart);
+  const marker = document.createElement("span"); marker.textContent = "​"; m.appendChild(marker);   // zero-width marker on the caret's line
+  if (m.parentNode !== document.body) document.body.appendChild(m);
+  const lh = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) * 1.5) || 22;
+  const top = marker.offsetTop;
+  m.removeChild(marker);
+  if (top < ta.scrollTop) ta.scrollTop = top;                                   // caret above the view → scroll up to it
+  else if (top + lh > ta.scrollTop + ta.clientHeight) ta.scrollTop = top + lh - ta.clientHeight;  // below → scroll down
+}
 // Grow a textarea to fit its content (replaces the ugly native resize grip on settings textareas).
 function autoGrowEl(el, max) { if (!el) return; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, max || 460) + "px"; }
 function focusInput() { const el = document.getElementById("input"); if (el) el.focus(); }
@@ -4669,6 +4727,54 @@ setupMarked();
   const setH = () => document.documentElement.style.setProperty("--composer-h", c.offsetHeight + "px");
   setH();
   if (window.ResizeObserver) new ResizeObserver(setH).observe(c);
+})();
+// Pull the composer's top edge to resize the input box (Telegram/Slack-style). Drag sets an EXACT manual
+// height clamped to [1 line, ~40vh] and keeps it (even below 5 lines, with long text scrolling inside) —
+// double-click the grip to restore the default 5-line auto-grow.
+(function () {
+  const rz = document.getElementById("composer-resizer");
+  const ta = document.getElementById("input");
+  if (!rz || !ta) return;
+  let dragging = false, startY = 0, startH = 0, pinBottom = false;
+  // The composer grows UPWARD (it's anchored to the bottom), so sync --composer-h immediately and, when the
+  // chat was scrolled to the bottom, re-pin it there — that lifts the last line up to stay above the composer.
+  const reflow = () => {
+    const c = document.getElementById("composer");
+    if (c) document.documentElement.style.setProperty("--composer-h", c.offsetHeight + "px");
+    const box = document.getElementById("messages");
+    if (pinBottom && box) box.scrollTop = box.scrollHeight;
+  };
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove("input-resizing");
+    try { rz.releasePointerCapture(_pid); } catch (_) {}
+  };
+  let _pid = -1;
+  rz.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    dragging = true; startY = e.clientY; startH = ta.getBoundingClientRect().height; _pid = e.pointerId;
+    const box = document.getElementById("messages");
+    pinBottom = !!(box && box.style.display !== "none" && isNearBottom(box));
+    document.body.classList.add("input-resizing");
+    try { rz.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  rz.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    if (!e.buttons) { end(); return; }                       // button already released (e.g. let go off-window so pointerup was lost) → stop; don't keep following the bare cursor
+    const h = startH + (startY - e.clientY);                 // drag up → taller
+    inputUserH = Math.max(inputFloorMin(), Math.min(h, inputCeil()));   // EXACT height, clamped — never auto-resets (which, with >5 lines, would snap back up to the 5-line cap)
+    autoGrow(); keepCaretVisible(ta); reflow();               // keep the caret's line in view as the box shrinks/grows
+  });
+  rz.addEventListener("pointerup", end);
+  rz.addEventListener("pointercancel", end);
+  rz.addEventListener("lostpointercapture", end);            // capture dropped for any reason → make sure we leave drag mode
+  // belt-and-suspenders: a release that lands outside the window never reaches rz, so end on a window-level
+  // pointerup/blur too — otherwise the drag sticks and the box keeps tracking the cursor with no button down.
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  window.addEventListener("blur", end);
+  rz.addEventListener("dblclick", () => { inputUserH = null; autoGrow(); reflow(); });
 })();
 // Load persisted state from IndexedDB (async), then bring the UI up.
 // Seed config from a bundled .env (for distribution builds): on first run only, pre-fill
