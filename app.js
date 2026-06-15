@@ -612,9 +612,9 @@ function estContextTokens(conv) {
   let txt = activePromptText(conv) || "";
   let imgs = 0;
   let msgs = conv.messages;
-  if (conv.compaction && conv.compaction.summary) {
+  if (conv.compaction) {
     const cut = Math.min(conv.compaction.count, msgs.length);
-    if (msgs.length > cut) { txt += conv.compaction.summary; msgs = msgs.slice(cut); }
+    if (msgs.length > cut) { if (conv.compaction.summary) txt += conv.compaction.summary; msgs = msgs.slice(cut); }
   }
   for (const m of msgs) {
     txt += m.content || "";
@@ -697,9 +697,8 @@ function setupMarked() {
       m = /^\$([^\n$]+?)\$/.exec(src);
       if (m) {
         const b = m[1];
-        if (/^\s|\s$/.test(b)) return;            // no leading/trailing space (avoids "$ x $")
-        if (/^\d+(\.\d+)?$/.test(b)) return;       // pure number → likely currency
-        if (/\d/.test(src.charAt(m[0].length))) return; // next char is a digit → "$5...$10"
+        if (/^\s|\s$/.test(b)) return;            // no leading/trailing space (avoids "$ x $" and multi-word currency like "$4 and $")
+        if (/\d/.test(src.charAt(m[0].length))) return; // next char is a digit → "$5...$10" currency (but "$4$" / "$1$" closed pairs DO render as math)
         return { type: "inlineMath", raw: m[0], text: b, display: false };
       }
     },
@@ -1960,6 +1959,27 @@ function openLightbox(src) {
   requestAnimationFrame(() => ov.classList.add("show"));
 }
 
+// Serialize a selection to plain text for quoting. Replaces each KaTeX render with its LaTeX source
+// ($…$ / $$…$$) — otherwise selection.toString() dumps the formula's many visual spans PLUS the hidden
+// MathML across lots of separate lines, which then each get a "> " prefix (the「引用散在很多行」bug).
+function selectionToText(sel) {
+  if (!sel || !sel.rangeCount) return "";
+  const wrap = document.createElement("div");
+  for (let i = 0; i < sel.rangeCount; i++) wrap.appendChild(sel.getRangeAt(i).cloneContents());
+  wrap.querySelectorAll(".katex").forEach(k => {
+    const ann = k.querySelector("annotation[encoding='application/x-tex']");
+    const tex = ((ann ? ann.textContent : k.textContent) || "").trim();
+    const display = !!(k.closest && k.closest(".katex-display")) || (k.parentElement && (k.parentElement.classList.contains("math-block") || k.parentElement.classList.contains("math-bare")));
+    k.replaceWith(document.createTextNode(tex ? (display ? "$$" + tex + "$$" : "$" + tex + "$") : ""));
+  });
+  // innerText (needs to be in the document) keeps real block breaks as newlines but ignores soft wraps,
+  // so the quote only splits where the content actually splits — not every wrapped line.
+  wrap.style.cssText = "position:absolute;left:-9999px;top:0;white-space:pre-wrap;";
+  document.body.appendChild(wrap);
+  const out = wrap.innerText;
+  document.body.removeChild(wrap);
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 /* 引用：把选中的回答文字以引用块填入输入框追问。入口在助手消息的右键菜单——主动触发，
  * 不再用划词浮按钮（那个常被误碰，输入框莫名多出一段引用）。 */
 function quoteText(text) {
@@ -2001,7 +2021,7 @@ function buildMessage(msg, index) {
     e.preventDefault();
     // capture any text selected WITHIN this assistant message NOW — opening/clicking the menu collapses the selection
     const s = window.getSelection && window.getSelection();
-    const quoteSel = (s && !s.isCollapsed && s.rangeCount && row.contains(s.anchorNode) && row.classList.contains("msg-assistant")) ? s.toString().trim() : "";
+    const quoteSel = (s && !s.isCollapsed && s.rangeCount && row.contains(s.anchorNode) && row.classList.contains("msg-assistant")) ? selectionToText(s) : "";
     showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg, quoteSel));
   };
   const inner = document.createElement("div");
@@ -2113,6 +2133,15 @@ function buildMessage(msg, index) {
 
 function compactionMarker(conv) {
   const n = Math.min(conv.compaction.count, conv.messages.length);
+  if (conv.compaction.divider) {   // /newhere — a plain boundary line, no summary; the model just doesn't see anything above it
+    const d = document.createElement("div"); d.className = "newhere-marker";
+    const lab = document.createElement("span"); lab.className = "newhere-label"; lab.textContent = "新话题 · 以上不计入上下文";
+    const undo = document.createElement("button"); undo.className = "newhere-undo"; undo.type = "button"; undo.textContent = "撤销"; undo.title = "撤销分界，恢复完整上下文";
+    undo.onclick = (e) => { e.stopPropagation(); conv.compaction = null; save(); renderMessages(); toast("已撤销分界"); };
+    lab.appendChild(undo);
+    d.appendChild(lab);
+    return d;
+  }
   const wrap = document.createElement("div"); wrap.className = "compact-marker";
   const line = document.createElement("div"); line.className = "compact-line";
   const detail = document.createElement("div"); detail.className = "compact-detail"; detail.style.display = "block"; // expanded by default
@@ -2249,15 +2278,23 @@ function renderNodemap() {
   const users = conv ? conv.messages.map((m, i) => ({ m, i })).filter(x => x.m.role === "user") : [];
   if (users.length < 2) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
+  // /newhere boundary: split the minimap between the old topic's nodes and the new one's. Collapsed view =
+  // a touch more gap before the first new node (no visible mark); expanded panel = a「新话题」rule.
+  const divAt = (conv.compaction && conv.compaction.divider) ? Math.min(conv.compaction.count, conv.messages.length) : -1;
+  let divDone = false;
+  const addPanelDivider = () => { const dp = document.createElement("div"); dp.className = "nm-div-item"; dp.textContent = "新话题"; panel.appendChild(dp); divDone = true; };
   users.forEach(({ m, i }) => {
+    const splitHere = (divAt >= 0 && !divDone && i >= divAt);   // first turn past the boundary
+    if (splitHere) addPanelDivider();
     nodeUserIndices.push(i);
-    const bar = document.createElement("div"); bar.className = "nm-bar"; bar.dataset.idx = i; bars.appendChild(bar);
+    const bar = document.createElement("div"); bar.className = "nm-bar" + (splitHere ? " nm-after-div" : ""); bar.dataset.idx = i; bars.appendChild(bar);
     const item = document.createElement("button"); item.className = "nm-item"; item.dataset.idx = i;
     if (m.nodeTitle) item.textContent = m.nodeTitle;
     else { item.textContent = plainText(m).slice(0, 60); item.classList.add("untitled"); }
     item.onclick = () => { nodePinned = i; scrollToMessage(i); setNodeActive(i); };
     panel.appendChild(item);
   });
+  if (divAt >= 0 && !divDone) addPanelDivider();   // boundary sits after the last turn (just ran /newhere) → panel marker only
   queueNodeTitles(conv);
   updateNodeActive();
 }
@@ -2849,12 +2886,14 @@ async function runCompletion(conv, opts) {
     history.push({ role: "user", content: "继续。直接从上文的中断处接着输出剩余内容，不要重复已输出的部分，不要重新开头，也不要加任何说明。" });
   }
   let system = activePromptText(conv);
-  if (conv.compaction && conv.compaction.summary) {
+  if (conv.compaction) {   // /compact summary OR /newhere divider — both cut the model's context at .count
     const cut = Math.min(conv.compaction.count, history.length);
     const sliced = history.slice(cut);
-    if (sliced.length) { // only compact when there is something newer than the summary
-      const note = "[以下是此前对话的摘要，请据此继续，无需重复其中内容]\n" + conv.compaction.summary;
-      system = system ? (system + "\n\n" + note) : note;
+    if (sliced.length) { // only cut when there is something newer than the boundary
+      if (conv.compaction.summary) {   // /compact carries a summary of the dropped history; /newhere drops it silently
+        const note = "[以下是此前对话的摘要，请据此继续，无需重复其中内容]\n" + conv.compaction.summary;
+        system = system ? (system + "\n\n" + note) : note;
+      }
       history = sliced;
     }
   }
@@ -4279,8 +4318,33 @@ const IS_MAC = /mac/i.test(navigator.platform) || /Mac/.test(navigator.userAgent
 const MOD = IS_MAC ? "⌘" : "Ctrl";
 
 /* ===================== Slash commands ===================== */
+// /newhere — start a fresh topic inside the SAME conversation: keep the history visible but draw a boundary
+// the model won't read past, while keeping THIS conversation's model / 提示词 / 思考强度 (unlike /new, which
+// opens a blank conversation on the global defaults). Implemented as a summary-less compaction boundary.
+function newHere() {
+  const conv = currentConv();
+  if (!conv || !conv.messages.length) { toast("当前对话为空，无需分界"); return; }
+  if (conv.compaction && conv.compaction.divider && conv.compaction.count === conv.messages.length) { toast("已经在新话题开头了"); return; }
+  conv.compaction = { count: conv.messages.length, summary: "", divider: true };
+  save(); renderMessages();
+  toast("已开启新话题 · 以上不计入上下文");
+  focusInput();
+}
+// /clear — wipe this conversation's messages but keep the conversation (and its model / 提示词 / 思考强度) in
+// place. Undoable. Differs from /new, which spins up a blank conversation on the global default settings.
+function clearConversation() {
+  const conv = currentConv();
+  if (!conv || !conv.messages.length) { toast("当前对话已经是空的"); return; }
+  const snap = { messages: conv.messages.slice(), compaction: conv.compaction, title: conv.title, titled: conv.titled };
+  conv.messages = []; conv.compaction = null; conv.title = "新对话"; conv.titled = false;
+  save(); renderMessages(); renderSidebar();
+  toast("已清空当前对话", { label: "撤销", fn: () => { conv.messages = snap.messages; conv.compaction = snap.compaction; conv.title = snap.title; conv.titled = snap.titled; save(); renderMessages(); renderSidebar(); } });
+  focusInput();
+}
 const SLASH_COMMANDS = [
   { cmd: "/new", desc: "新建对话", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); newConversation(); } },
+  { cmd: "/newhere", desc: "在当前对话里开启新话题（以上不计入上下文，保留模型/提示词/思考设置）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); newHere(); } },
+  { cmd: "/clear", desc: "清空当前对话（保留模型/提示词/思考设置）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); clearConversation(); } },
   { cmd: "/model", desc: "切换模型", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openPopover(); } },
   { cmd: "/prompt", desc: "切换系统提示词", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); openPromptPop(); } },
   { cmd: "/compact", desc: "压缩上下文（AI 总结早前对话）", run: () => { const i = document.getElementById("input"); i.value = ""; autoGrow(); compactContext(); } },
@@ -4288,12 +4352,21 @@ const SLASH_COMMANDS = [
 ];
 let slash = { open: false, items: [], index: 0 };
 
+// Fuzzy slash matching: the query must share the command's FIRST letter and be a subsequence of it (letters
+// in order), so "/nh"→/newhere, "/eo"→/effort, "/cp"→/compact all hit without "e" matching everything.
+// Prefix matches (e.g. "/new") rank above looser subsequence ones.
+function isSubseq(q, s) { let i = 0; for (let j = 0; j < s.length && i < q.length; j++) if (s[j] === q[i]) i++; return i === q.length; }
+function matchSlash(q) {
+  if (!q) return SLASH_COMMANDS.slice();
+  const hits = SLASH_COMMANDS.filter(c => { const n = c.cmd.slice(1).toLowerCase(); return n[0] === q[0] && isSubseq(q, n); });
+  return hits.sort((a, b) => (b.cmd.slice(1).toLowerCase().startsWith(q) ? 1 : 0) - (a.cmd.slice(1).toLowerCase().startsWith(q) ? 1 : 0));
+}
 function updateSlash() {
   const v = document.getElementById("input").value;
   const m = /^\/(\S*)$/.exec(v);          // whole input is "/word" with no spaces yet
   if (!m) return closeSlash();
   const q = m[1].toLowerCase();
-  const items = SLASH_COMMANDS.filter(c => c.cmd.slice(1).toLowerCase().startsWith(q));
+  const items = matchSlash(q);
   if (!items.length) return closeSlash();
   slash.open = true; slash.items = items; slash.index = 0;
   renderSlash();
