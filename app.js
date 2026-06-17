@@ -1980,6 +1980,13 @@ function selectionToText(sel) {
   document.body.removeChild(wrap);
   return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
+// 选区落在 row 这条消息内时返回其文本（公式转回 $LaTeX$），否则空串。用于「复制/引用选中文字」。
+function rowSelectionText(row) {
+  const s = window.getSelection && window.getSelection();
+  if (!row || !s || s.isCollapsed || !s.rangeCount) return "";
+  if (!(row.contains(s.anchorNode) || row.contains(s.focusNode))) return "";
+  return selectionToText(s);
+}
 /* 引用：把选中的回答文字以引用块填入输入框追问。入口在助手消息的右键菜单——主动触发，
  * 不再用划词浮按钮（那个常被误碰，输入框莫名多出一段引用）。 */
 function quoteText(text) {
@@ -2019,10 +2026,9 @@ function buildMessage(msg, index) {
   row.oncontextmenu = (e) => {
     if (editingIndex != null) return;
     e.preventDefault();
-    // capture any text selected WITHIN this assistant message NOW — opening/clicking the menu collapses the selection
-    const s = window.getSelection && window.getSelection();
-    const quoteSel = (s && !s.isCollapsed && s.rangeCount && row.contains(s.anchorNode) && row.classList.contains("msg-assistant")) ? selectionToText(s) : "";
-    showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg, quoteSel));
+    // capture any text selected WITHIN this message NOW — opening/clicking the menu collapses the selection
+    const selCap = rowSelectionText(row);
+    showContextMenu(e.clientX, e.clientY, messageMenuItems(index, msg, selCap));
   };
   const inner = document.createElement("div");
   inner.className = "msg-inner";
@@ -2095,16 +2101,18 @@ function buildMessage(msg, index) {
 
   const actions = inner.querySelector(".msg-actions");
   const mk = (icoName, label, cls, fn) => { const b = document.createElement("button"); b.className = "act" + (cls ? " " + cls : ""); b.innerHTML = ic(icoName, 13) + "<span>" + label + "</span>"; b.onclick = fn; return b; };
+  // 复制按钮：pointerdown 时（选区还没被 mousedown 清掉）先抓一次选中文字 → 有选区就复制选区，没选区复制整条
+  const mkCopy = () => { const b = mk("copy", "复制", "", (e) => copyMessage(index, e)); b.addEventListener("pointerdown", () => { b._selText = rowSelectionText(row); }); return b; };
   if (isUser) {
     const conv0 = currentConv();
     // a prompt with no answer after it (e.g. its answer was deleted) gets a 重新回答 button, left of 编辑
     if (conv0 && index === conv0.messages.length - 1) actions.append(mk("refresh", "重新回答", "", () => answerFor(index)));
-    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
+    actions.append(mk("edit", "编辑", "", () => { editingIndex = index; renderMessages(); }), mkCopy(), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else if (msg.error) {
     actions.append(mk("trash", "删除", "danger", () => deleteMessage(index)));
   } else {
     if (msg.stopped) actions.append(mk("send", "继续", "continue", () => continueGeneration(index)));   // 被中断的回答：从断点接着写（视觉突出，别埋在按钮堆里）
-    actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mk("copy", "复制", "", (e) => copyMessage(index, e)), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
+    actions.append(mk("refresh", "重新回答", "", () => regenerate(index)), mkCopy(), mk("fork", "分支", "", () => forkConversation(index)), mk("trash", "删除", "danger", () => deleteMessage(index)));
   }
 
   // answer-version switcher (‹ 1/2 ›) — on any assistant message that has multiple versions. Regenerating
@@ -2428,12 +2436,17 @@ function regenerate(index) {
   editingIndex = null;
   runCompletion(conv, { carryVariants: carry, regenAt: index });
 }
-function copyMessage(index, e) {
+function copyMessage(index, e, override) {
   const conv = currentConv(); if (!conv) return;
-  navigator.clipboard.writeText(conv.messages[index].content || "");
+  const btn = e && e.currentTarget;
+  // 优先级：显式传入的选中文字（右键菜单）> pointerdown 抓到的选区（操作栏按钮）> 实时选区 > 整条消息
+  let text = (override || "").trim();
+  if (!text && btn && btn._selText) text = btn._selText;
+  if (!text && btn) text = rowSelectionText(btn.closest(".msg-row"));
+  if (!text) text = conv.messages[index].content || "";
+  navigator.clipboard.writeText(text);
   // currentTarget is always the .act button (clicking its icon would make e.target the <svg>); only swap the
   // label <span> so the icon survives, and flag .done for the "copied" state.
-  const btn = e && e.currentTarget;
   const lab = btn && btn.querySelector("span");
   if (lab) {
     lab.textContent = "已复制"; btn.classList.add("done");
@@ -2497,12 +2510,12 @@ function regenerateWith(index, ref) {
   conv.model = clone(ref); save();
   regenerate(index);
 }
-function messageMenuItems(index, msg, quoteSel) {
+function messageMenuItems(index, msg, selCap) {
   const conv = currentConv();
   const isLast = conv && index === conv.messages.length - 1;
   if (msg.role === "user") {
     const items = [
-      { label: "复制", icon: "copy", onClick: () => copyMessage(index) },
+      { label: selCap ? "复制选中文字" : "复制", icon: "copy", onClick: () => copyMessage(index, null, selCap) },
       { label: "编辑", icon: "edit", onClick: () => { editingIndex = index; renderMessages(); } },
     ];
     if (isLast) items.push({ label: "重新回答", icon: "refresh", onClick: () => answerFor(index) });
@@ -2522,9 +2535,9 @@ function messageMenuItems(index, msg, quoteSel) {
     onClick: () => regenerateWith(index, ref),
   }));
   const items = [];
-  if (quoteSel) items.push({ label: "引用选中文字", icon: "chat", onClick: () => quoteText(quoteSel) }, { sep: true });
+  if (selCap) items.push({ label: "引用选中文字", icon: "chat", onClick: () => quoteText(selCap) }, { sep: true });
   items.push(
-    { label: "复制", icon: "copy", onClick: () => copyMessage(index) },
+    { label: selCap ? "复制选中文字" : "复制", icon: "copy", onClick: () => copyMessage(index, null, selCap) },
     { label: "重新回答", icon: "refresh", onClick: () => regenerate(index) },
   );
   if (models.length) items.push({ label: "用其他模型重答", icon: "cube", sub: models });
