@@ -841,7 +841,9 @@ body.input-resizing #input { pointer-events: none; }
 #slash-pop .slash-item { white-space: nowrap; }
 
 /* ---------- Modal (two-pane settings) ---------- */
-#modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+#modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 50; -webkit-app-region: no-drag; }
+/* 整个设置遮罩标记 no-drag，把它盖住的下层拖拽区（#header 顶部 60px、#sidebar .top）抠掉——否则窗口拉矮时
+   居中的弹窗上移，右上角关闭按钮落进顶部 60px 拖拽带，点击会被当成「拖窗口」吞掉而点不动。.modal-title 仍是 drag。 */
 #modal-bg.show { display: flex; }
 #modal { position: relative; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 14px; width: 80vw; max-width: 1280px; height: 92vh; max-height: 1040px; display: flex; overflow: hidden; }
 #modal:focus { outline: none; }   /* 打开设置时焦点落在弹窗本身（tabindex=-1），不显示轮廓 */
@@ -851,6 +853,10 @@ body.input-resizing #input { pointer-events: none; }
 [data-platform="win"] #modal-bg, [data-platform="other"] #modal-bg { align-items: flex-start; padding-top: 64px; }
 [data-platform="win"] #modal, [data-platform="other"] #modal { height: min(92vh, calc(100vh - 76px)); }
 #modal-nav { width: 168px; flex-shrink: 0; background: var(--bg); border-right: 1px solid var(--border); padding: 16px 10px; display: flex; flex-direction: column; gap: 3px; }
+/* 标题（含拖拽区）+ 搜索框固定不滚动；只有下面的导航项放进 #nav-scroll，窗口变矮时它内部滚动（修原 bug：底部「网络/数据/关于」被裁掉且没滚动条）。
+   关键：不能让 #modal-nav 自己当滚动容器——标题是 -webkit-app-region: drag 拖拽区，落在滚动容器里时 Chromium 会算错拖拽命中区，
+   把右上角关闭按钮的点击当成「拖动窗口」吞掉。所以滚动只发生在不含拖拽区的 #nav-scroll。 */
+#nav-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 3px; }
 #modal-nav .modal-title { font-size: 16px; font-weight: 700; padding: 4px 10px 10px; }
 #set-search-wrap { position: relative; display: flex; align-items: center; margin: 0 2px 10px; }
 #set-search-wrap .search-ico { position: absolute; left: 9px; color: var(--text-dim); pointer-events: none; }

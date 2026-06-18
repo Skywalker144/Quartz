@@ -3444,7 +3444,7 @@ function filterSettingsNav(q) {
     const hay = (b.textContent + " " + (b.dataset.keywords || "")).toLowerCase();
     b.classList.toggle("hidden", q !== "" && !hay.includes(q));
   });
-  const kids = Array.from(document.querySelectorAll("#modal-nav > .nav-group, #modal-nav > .nav-item"));
+  const kids = Array.from(document.querySelectorAll("#nav-scroll > .nav-group, #nav-scroll > .nav-item"));
   for (let i = 0; i < kids.length; i++) {
     if (!kids[i].classList.contains("nav-group")) continue;
     let anyVisible = false;
@@ -3457,7 +3457,7 @@ function filterSettingsNav(q) {
   // zero-result note (otherwise the nav column just goes blank with no explanation)
   let note = document.getElementById("nav-empty");
   if (q !== "" && !firstVisible) {
-    if (!note) { note = document.createElement("div"); note.id = "nav-empty"; note.className = "nav-empty"; document.getElementById("modal-nav").appendChild(note); }
+    if (!note) { note = document.createElement("div"); note.id = "nav-empty"; note.className = "nav-empty"; (document.getElementById("nav-scroll") || document.getElementById("modal-nav")).appendChild(note); }
     note.textContent = "无匹配设置"; note.style.display = "";
   } else if (note) note.style.display = "none";
   if (q !== "" && firstVisible) {
