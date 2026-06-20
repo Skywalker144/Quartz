@@ -114,10 +114,10 @@ svg { display: block; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: width .18s ease;
+  transition: width .18s ease, margin .18s ease;   /* 收起态只把左边距归 0、上下保持 10px（见 .collapsed）→ width+margin 一起过渡时只有横向在动：不瞬跳、也不向左上飘 */
   position: relative; z-index: 20;   /* keep the card's shadow above the header/composer so it isn't clipped */
 }
-#sidebar.collapsed { margin: 0; border: none; box-shadow: none; }
+#sidebar.collapsed { margin: 10px 0; border: none; box-shadow: none; }   /* 上下保持 10px → 纯横向收起（顶边不动）；左右归 0 → 收起后不留左边距、主区贴边 */
 #sidebar .top { padding: 30px 10px 4px; min-width: 200px; -webkit-app-region: drag; }   /* top strip hosts the traffic lights */
 /* Windows/Linux: no traffic lights on the left, so reclaim that empty top-left space — lift 新对话 up */
 [data-platform="win"] #sidebar .top, [data-platform="other"] #sidebar .top { padding-top: 10px; }
@@ -1107,7 +1107,7 @@ body.input-resizing #input { pointer-events: none; }
 #messages.dense .msg-content { line-height: 1.5; }
 
 /* ---- empty state: example prompt cards ---- */
-#empty-guide { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 17vh; width: 100%; max-width: 520px; max-height: 420px; overflow: hidden; transition: margin-top .3s ease, max-height .3s ease, opacity .32s ease .26s, transform .32s ease .26s; }   /* 间距比例（143px@844h最大化 ≈ 17vh）。出现分时序：先平滑撑开间距/高度（水晶+问候顺滑上移、不跳），示例延迟 .26s 再在最终位淡入+轻浮（撑开时它还透明，看不到"拉开"） */
+#empty-guide { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: calc(17vh - 12px) -12px -12px; width: 100%; max-width: 544px; max-height: 444px; overflow: hidden; padding: 12px; transition: margin-top .3s ease, max-height .3s ease, opacity .32s ease .26s, transform .32s ease .26s; }   /* 间距比例（143px@844h ≈ 17vh）。padding:12 + 等量负 margin（上 calc(17vh-12)）：给卡片悬停上移/高亮边框/阴影（shadow-card 上溢约 9px）留余量，又不被 overflow:hidden（淡出收起用）裁掉，布局零位移、卡片内容区仍 520。出现分时序：先平滑撑开间距/高度（水晶+问候顺滑上移、不跳），示例延迟 .26s 再淡入+轻浮 */
 .guide-card { text-align: left; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; cursor: pointer; color: var(--text); transition: border-color .15s, transform .12s, background .15s; box-shadow: var(--shadow-card); }
 .guide-card:hover { border-color: var(--text-dim); transform: translateY(-1px); }
 .guide-card:active { transform: scale(.985); }

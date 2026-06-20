@@ -758,6 +758,15 @@ function bindReason(rEl, row) {
   if (head) head.onclick = () => { setReasonExp(rEl, rEl.dataset.exp === "collapsed" ? (rEl.dataset.lastExp || "half") : "collapsed"); trackCrest(row); };
   const more = rEl.querySelector(".reasoning-more");
   if (more) more.onclick = (e) => { e.stopPropagation(); setReasonExp(rEl, rEl.dataset.exp === "full" ? "half" : "full"); trackCrest(row); };
+  // 思考流式时正文默认贴底跟随；用户在思考窗内上滑（离底 >24px）即暂停跟随、停在原处看，滑回底部再自动恢复。
+  const rb = rEl.querySelector(".reasoning-body");
+  if (rb) {
+    rb._follow = true;                                  // 每次（重新）绑定/开播都默认贴底跟随
+    if (!rb._followBound) {
+      rb._followBound = true;
+      rb.addEventListener("scroll", () => { rb._follow = rb.scrollHeight - rb.scrollTop - rb.clientHeight < 24; }, { passive: true });
+    }
+  }
 }
 // 水晶定位：思考时骑在思考窗口的垂直中线上；否则落在回答首行（CSS 默认 top:0.85em）。top 的 CSS 过渡产生移动动画。
 function placeCrest(row) {
@@ -2825,7 +2834,7 @@ async function sendMessage() {
   conv.updatedAt = Date.now();
   if (!conv.titled && conv.messages.filter(m => m.role === "user").length === 1)
     conv.title = (text || (atts[0] && atts[0].name) || "新对话").slice(0, 30);
-  input.value = ""; autoGrow(); pending = []; renderPending();
+  input.value = ""; collapseInputToDefault(); pending = []; renderPending();
   maybeTitle(conv);                              // name / update the conversation title (node titles come from the node-map render)
   await runCompletion(conv, { restorable: true });
 }
@@ -2933,7 +2942,7 @@ async function runCompletion(conv, opts) {
       effort: conv.reasoningEffort || "medium",
       signal: abortController.signal,
       onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); const openTail = ((full.match(/```/g) || []).length % 2) === 1; enhanceCode(contentEl, { openTail }); /* 始终套代码外框（含头栏，稳住块高度、流式中不跳动）；围栏未闭合（代码还在写）时先不高亮/不救回公式——闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rOpen = ((rt.match(/```/g) || []).length % 2) === 1; enhanceCode(reasoningBody, { openTail: rOpen }); if (reasoningWrap.dataset.exp !== "collapsed") reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
+      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rOpen = ((rt.match(/```/g) || []).length % 2) === 1; enhanceCode(reasoningBody, { openTail: rOpen }); if (reasoningWrap.dataset.exp !== "collapsed" && reasoningBody._follow !== false) reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
     });
     acc = r.text || ""; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
@@ -4221,6 +4230,24 @@ function autoGrow() {
   ta.style.height = h + "px";
   ta.style.overflowY = content > h + 1 ? "auto" : "hidden";          // scrollbar only when the text actually overflows
 }
+// 发送后把输入框平滑收回默认高度（≈1 行）：直接 autoGrow() 是瞬间跳，这里给 height 加一次性过渡。
+// 同时清掉手动拖拽高度 inputUserH，真正回到默认（否则发完会停在之前拖过的高度）。
+function collapseInputToDefault() {
+  const ta = document.getElementById("input"); if (!ta) return;
+  inputUserH = null;                                   // 丢弃手动拖拽高度 → 回默认
+  const from = ta.offsetHeight, target = inputFloorMin();
+  ta.style.overflowY = "hidden";                       // 收缩动画期间不显示滚动条
+  if (from <= target + 1) { ta.style.transition = ""; autoGrow(); return; }   // 本就是默认高度，无需动画
+  ta.style.height = from + "px";                       // 固定当前高度作为动画起点
+  ta.style.transition = "height .18s ease";
+  requestAnimationFrame(() => { ta.style.height = target + "px"; });           // 下一帧再改目标值 → 触发过渡
+  ta.addEventListener("transitionend", function done(e) {
+    if (e.propertyName !== "height") return;
+    ta.removeEventListener("transitionend", done);
+    ta.style.transition = "";
+    autoGrow();                                        // 收完交回 autoGrow 接管（恢复正常 overflow 等）
+  });
+}
 // Keep the caret's line inside the visible part of the textarea — used while dragging the composer shorter/
 // taller so the line you're typing on never scrolls out of view. Measures the caret's pixel offset with a
 // cached hidden mirror that copies the textarea's wrapping (font / width / padding), then nudges scrollTop.
@@ -4723,7 +4750,9 @@ if (window.chatbox && window.chatbox.onQuickShortcutResult) {
   });
 }
 // Auto-update notice — lives at the SIDEBAR BOTTOM and replaces the 已归档 area while an update is
-// pending (no separate floating box). Routine launch "checking" is ignored so it doesn't flicker.
+// pending (no separate floating box). ONLY the "ready" (download finished) state surfaces here —
+// checking/downloading/error stay silent in the corner so it neither flickers nor nags; full status
+// still lives in 设置 → 关于。即：只在下载完成后角落才提示「重启以更新」，不展示下载过程。
 let dismissedUpdate = "";   // 本会话内被用户从角落关掉的更新版本（仅压制角标，不写持久"忽略"、不影响设置里的检查/更新）
 function renderUpdatePill(s) {
   const notice = document.getElementById("update-notice");
@@ -4733,7 +4762,7 @@ function renderUpdatePill(s) {
   const xbtn = notice.querySelector(".upd-x"), bar = notice.querySelector(".upd-bar");
   const barFill = bar && bar.querySelector("i");
   const st = s && s.state, v = (s && s.version) ? (" " + s.version) : "";
-  let show = st === "ready" || st === "downloading" || st === "error" || st === "available";
+  let show = st === "ready";   // 只在下载完成后才在角落提示「重启以更新」；下载/检查/出错过程一律不在角落展示（设置→关于 里仍有完整状态）
   if (show && s && s.version && s.version === dismissedUpdate) show = false;   // 用户在角落关过这个版本 → 本会话不再弹（设置里仍照常显示、可更新）
   notice.hidden = !show;
   if (footer) footer.classList.toggle("has-update", show);   // hide the profile row, show the update notice in its place
