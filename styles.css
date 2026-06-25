@@ -173,6 +173,10 @@ svg { display: block; }
 .conv .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
 .conv:hover { background: var(--bg-elev); color: var(--text); }
 .conv.active { background: var(--accent-soft); color: var(--text); }
+/* 正在生成（后台或当前）的对话：标题前一个脉冲圆点，让用户知道并发生成仍在进行 */
+.conv.gen .title::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--text); vertical-align: middle; animation: genPulse 1.1s ease-in-out infinite; }
+@keyframes genPulse { 0%, 100% { opacity: .22; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .conv.gen .title::before { animation: none; opacity: .7; } }
 .conv-group { font-size: 11px; font-weight: 600; color: var(--text-dim); letter-spacing: .02em; padding: 12px 12px 4px; user-select: none; }
 .conv-group:first-child { padding-top: 4px; }
 /* 单行对话项：标题占满，hover 时在标题右侧显出 置顶 / 删除（平时不占位，标题用满宽度） */

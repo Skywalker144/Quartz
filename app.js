@@ -80,8 +80,19 @@ let nextPromptId = null;  // system prompt for the next new conversation; set in
 let nextWeb = false;        // web search toggle for the next new conversation
 let nextReasoning = false;  // reasoning/thinking toggle for the next new conversation
 let nextReasoningEffort = "medium"; // low | medium | high, for the next new conversation
-let abortController = null;
-let restoreOnAbort = null;   // {text, attachments} marker that this run was a fresh send (vs regenerate/continue)
+// 多对话并发生成：每个对话一条独立的流（内存态，不持久化）。键=对话 id，值={controller, targetIndex, reason?}。
+// 发送/停止键、流式视觉态只跟「当前对话」走（syncStreamingUI）；后台对话的流照常写回各自消息对象（onDelta/onReasoning 里按 currentId 守卫）。
+const streams = new Map();
+function isStreaming(convId) { return streams.has(convId); }
+function currentStream() { return streams.get(state.currentId) || null; }
+function currentStreaming() { return streams.has(state.currentId); }
+function syncStreamingUI() {
+  const s = currentStream();
+  const box = document.getElementById("messages");
+  if (box) box.classList.toggle("streaming", !!s);
+  if (s) setSending(true, s.reason); else setSending(false);
+  // 滚动锚（pinTop）不在这里动——它需要重建后的 DOM 才能算，统一在 renderMessages 末尾按当前流恢复（见那里的注释）。
+}
 let undoSend = null;         // armed after Esc-stops a fresh send: a SECOND Esc undoes the whole turn (prompt → input box)
 let pending = [];        // composer attachments awaiting send
 const _drafts = new Map();    // conv id -> { text, pending } unsent composer draft, kept in memory only (never persisted)
@@ -1282,7 +1293,7 @@ function relTime(ts) {
 }
 function buildConvEl(c) {
   const el = document.createElement("div");
-  el.className = "conv" + (c.id === state.currentId ? " active" : "") + (c.pinned ? " pinned" : "");
+  el.className = "conv" + (c.id === state.currentId ? " active" : "") + (c.pinned ? " pinned" : "") + (isStreaming(c.id) ? " gen" : "");   // gen：该对话正在生成（后台或当前）→ 标题前脉冲圆点
   el.tabIndex = 0; el.setAttribute("role", "option"); el.setAttribute("aria-selected", c.id === state.currentId ? "true" : "false");
   el.innerHTML =
     '<div class="conv-row"><span class="title"></span>' +
@@ -1884,6 +1895,7 @@ function renderMessages() {
   syncComposerDraft();   // stash/restore the per-conversation composer draft before (re)rendering
   const conv = currentConv();
   const box = document.getElementById("messages");
+  syncStreamingUI();   // 发送/停止键、流式视觉态按「当前对话」对齐（多对话并发生成）
   const empty = document.getElementById("empty");
   const titleEl = document.getElementById("conv-title");
   if (!titleEl.isContentEditable) {   // don't clobber the field while the user is editing the title inline
@@ -1925,6 +1937,13 @@ function renderMessages() {
   });
   enhanceCode(box);
   if (autoScroll) { box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop; }
+  // 多对话并发：DOM 重建后按「当前对话的流」恢复滚动锚——「全新发送」的流把 prompt↔回答分界钉在距顶 ~20%（切走再切回也保持，不退化成跟随底部）；
+  // 无流 / 原地重答（pin 假）则清掉锚、跟随底部。发送当下（流还没注册）走 else 清空，紧接着 runCompletion 再算一次，两边一致。
+  const _cs = currentStream();
+  if (_cs && _cs.pin) {
+    const _r = box.querySelector('.msg-row[data-index="' + _cs.targetIndex + '"]');
+    if (_r) { pinTop = Math.max(0, _r.offsetTop - Math.round(box.clientHeight * 0.2)); box.scrollTop = Math.min(pinTop, box.scrollHeight - box.clientHeight); lastSetTop = box.scrollTop; }
+  } else pinTop = null;
   updateScrollBtn();
   updateNodeActive();
   applySearchHighlight();   // highlight + reveal the find bar when a sidebar search is active
@@ -2411,7 +2430,7 @@ async function processNodeTitleQueue() {
 
 /* ===================== Message actions ===================== */
 function deleteMessage(index) {
-  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }   // deleting the streaming message would corrupt the transcript
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }   // deleting the streaming message would corrupt the transcript
   const conv = currentConv(); if (!conv) return;
   const removed = conv.messages[index];
   const snapshot = conv.messages.slice();         // shallow snapshot → exact undo
@@ -2423,7 +2442,7 @@ function deleteMessage(index) {
 }
 // Generate an answer for a user prompt that currently has none (its answer was deleted, etc.).
 function answerFor(index) {
-  if (abortController) return;
+  if (currentStreaming()) return;
   const conv = currentConv(); if (!conv) return;
   const um = conv.messages[index];
   if (!um || um.role !== "user") return;
@@ -2435,7 +2454,7 @@ function answerFor(index) {
 // an earlier reply no longer wipes the rest of the conversation). The previous answer is kept as a
 // switchable version (‹ 1/2 ›).
 function regenerate(index) {
-  if (abortController) return;
+  if (currentStreaming()) return;
   const conv = currentConv(); if (!conv) return;
   const old = conv.messages[index];
   if (!old || old.role !== "assistant") return;
@@ -2513,7 +2532,7 @@ function showContextMenu(x, y, items) {
 }
 // regenerate the answer at `index` with a different model (keeps the old answer as a switchable version)
 function regenerateWith(index, ref) {
-  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   const conv = currentConv(); if (!conv) return;
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
   conv.model = clone(ref); save();
@@ -2778,7 +2797,7 @@ function newConversation() {
 // Fork: copy the conversation up to and including message `index` into a brand-new conversation (a branch).
 // The original is left untouched; the branch carries the same model / prompt / settings so it continues cleanly.
 function forkConversation(index) {
-  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   const src = currentConv(); if (!src) return;
   if (index < 0 || index >= src.messages.length) return;
   const srcId = src.id;
@@ -2867,7 +2886,7 @@ async function runCompletion(conv, opts) {
   // A fresh user send arms "undo": after Esc stops it, a SECOND Esc returns the prompt (+attachments) to the box.
   undoSend = null;   // a new turn invalidates any pending undo from a previous stop
   const um = conv.messages[targetIndex - 1];
-  restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
+  const restoreOnAbort = (opts && opts.restorable && um && um.role === "user")
     ? { text: um.content || "", attachments: Array.isArray(um.attachments) ? um.attachments.slice() : [] } : null;
   pinTop = null; autoScroll = false; nodePinned = null;   // the pin (below) drives the streaming scroll
   selPointerDown = false;   // clear any stuck selection-press flag from a prior turn (safety; mouseup normally clears it)
@@ -2875,9 +2894,9 @@ async function runCompletion(conv, opts) {
   if (opts && opts.restorable) revealActiveConv({ smooth: true });   // 新发 prompt：当前对话不在可视区时，平滑滚到列表距顶 ~20%
 
   const box = document.getElementById("messages");
-  const row = (at != null || cont != null) ? box.querySelector('.msg-row[data-index="' + targetIndex + '"]') : box.lastElementChild;
+  let row = (at != null || cont != null) ? box.querySelector('.msg-row[data-index="' + targetIndex + '"]') : box.lastElementChild;
   if (!row) { setSending(false); return; }
-  const contentEl = row.querySelector(".msg-body > .msg-content");
+  let contentEl = row.querySelector(".msg-body > .msg-content");   // row/contentEl 用 let：中途切走再切回会重建 DOM，onDelta 里重新抓当前元素继续更新
   const reasoningWrap = row.querySelector(".reasoning");
   const reasoningBody = row.querySelector(".reasoning-body");
   renderAnswer(contentEl, cont != null ? renderMarkdown(contBase) : "", true);
@@ -2898,7 +2917,7 @@ async function runCompletion(conv, opts) {
     pinTop = null;   // in-place regenerate: stream where the answer already sits, don't move the viewport
   }
 
-  setSending(true); abortController = new AbortController();
+  setSending(true); const controller = new AbortController(); streams.set(conv.id, { controller, targetIndex, pin: (at == null && cont == null) });   // 注册本对话的流（并发表）；pin=全新发送（需把 prompt↔回答分界钉在距顶 ~20%）
   if (conv.webSearch && ref.provider !== "openrouter") toast("联网搜索目前仅 OpenRouter 模型支持，本次未联网");
 
   const d = state.settings.defaults;
@@ -2940,9 +2959,32 @@ async function runCompletion(conv, opts) {
       web: !!conv.webSearch,
       reasoning: !!conv.reasoning,
       effort: conv.reasoningEffort || "medium",
-      signal: abortController.signal,
-      onDelta: (t) => { acc = t; if (selPointerDown || userSelecting()) return; if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }  /* 回答一开始：思考收起、水晶落到回答首行 */ const full = cont != null ? contBase + t : t; renderAnswer(contentEl, renderMarkdown(full), true); const openTail = ((full.match(/```/g) || []).length % 2) === 1; enhanceCode(contentEl, { openTail }); /* 始终套代码外框（含头栏，稳住块高度、流式中不跳动）；围栏未闭合（代码还在写）时先不高亮/不救回公式——闭合后/完成时再扫。只扫当前这条消息。 */ applyAutoScroll(box); },
-      onReasoning: (rt) => { racc = rt; if (selPointerDown || userSelecting()) return; if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开（非 display 直接弹出）；水晶逐帧贴着窗口走 */ } } if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rOpen = ((rt.match(/```/g) || []).length % 2) === 1; enhanceCode(reasoningBody, { openTail: rOpen }); if (reasoningWrap.dataset.exp !== "collapsed" && reasoningBody._follow !== false) reasoningBody.scrollTop = reasoningBody.scrollHeight; }  /* 思考流式时也高亮代码块（围栏闭合才扫，同正文）；markdown/公式 renderMarkdown 已内联渲染 */ applyAutoScroll(box); },
+      signal: controller.signal,
+      onDelta: (t) => {
+        acc = t;
+        const full = cont != null ? contBase + t : t;
+        const tgt = conv.messages[targetIndex]; if (tgt) tgt.content = full;   // 增量写回消息对象：中途切到别的对话再切回，正文不丢、也不会被渲染成「…」（后台流照常跑完并保存）
+        if (selPointerDown || userSelecting()) return;
+        if (state.currentId !== conv.id) return;   // 正在看别的对话：后台继续累积+写回，但不动 DOM（不抢滚动、不渲染到别的对话）
+        if (!contentEl || !contentEl.isConnected) {   // 切回本对话后 DOM 被 renderMessages 重建过 → 重新抓当前元素，接着实时更新（不再卡在快照）
+          row = box.querySelector('.msg-row[data-index="' + targetIndex + '"]');
+          contentEl = row && row.querySelector(".msg-body > .msg-content");
+          if (!contentEl) return;
+        }
+        if (!answerStarted && t.trim()) { answerStarted = true; finishThinking(row); }   // 回答一开始：思考收起、水晶落到回答首行
+        renderAnswer(contentEl, renderMarkdown(full), true);
+        const openTail = ((full.match(/```/g) || []).length % 2) === 1; enhanceCode(contentEl, { openTail });   // 始终套代码外框（稳住块高度、流式中不跳动）；围栏未闭合时先不高亮，闭合/完成再扫
+        applyAutoScroll(box);
+      },
+      onReasoning: (rt) => {
+        racc = rt;
+        if (cont == null) { const tgt = conv.messages[targetIndex]; if (tgt) tgt.reasoning = rt; }   // 增量写回思考内容（继续生成的合并仍交给收尾处理）
+        if (selPointerDown || userSelecting()) return;
+        if (state.currentId !== conv.id) return;   // 看别的对话时不动 DOM（后台仍写回思考内容）
+        if (reasoningWrap) { if (!reasonShown) { reasonShown = true; reasoningWrap.style.display = "block"; setReasonTitle(reasoningWrap, "思考中"); bindReason(reasoningWrap, row); row.classList.add("thinking"); void reasoningWrap.offsetHeight; setReasonExp(reasoningWrap, "half"); trackCrest(row);  /* 从折叠态动画展开；水晶逐帧贴着窗口走 */ } }
+        if (reasoningBody) { reasoningBody.innerHTML = renderMarkdown(rt); const rOpen = ((rt.match(/```/g) || []).length % 2) === 1; enhanceCode(reasoningBody, { openTail: rOpen }); if (reasoningWrap.dataset.exp !== "collapsed" && reasoningBody._follow !== false) reasoningBody.scrollTop = reasoningBody.scrollHeight; }
+        applyAutoScroll(box);
+      },
     });
     acc = r.text || ""; racc = r.reasoning || racc; usage = r.usage;
   } catch (err) {
@@ -2952,15 +2994,12 @@ async function runCompletion(conv, opts) {
   // 流式正常结束却完全没有内容（无正文、无思考）→ 当软错误处理：给重试卡片，而不是存一句「（没有返回内容）」占位文本
   if (!aborted && !errInfo && !acc.trim() && !(racc || "").trim()) errInfo = { title: "没有返回内容", body: "模型这次没有输出任何内容，可能是网络波动或模型异常。点「重试」再试一次。" };
 
-  stopCrest(contentEl);
-  finishThinking(row);   // 思考结束：标题→思考过程、窗口收起、水晶落回回答（reasoning-only 回复也走到这里）
-  box.classList.remove("streaming");
-  cancelSmooth();
-  setSending(false); abortController = null;
+  streams.delete(conv.id);   // 本对话的流结束，从并发表移除
+  const isCurrent = (conv.id === state.currentId);   // 只有正在看这条对话时才动视图（滚动/正文/发送键）；后台完成只存数据 + 刷侧栏
+  if (isCurrent) { stopCrest(contentEl); finishThinking(row); box.classList.remove("streaming"); cancelSmooth(); setSending(false); }
 
   // 第一次 Esc 已停止生成；若这是一次「全新发送」，记下它，让「再按一次 Esc」可整轮撤销、prompt（+附件）退回输入框。
   const freshSend = (aborted && restoreOnAbort) ? restoreOnAbort : null;
-  restoreOnAbort = null;
 
   const last = conv.messages[targetIndex];
   last.content = (cont != null ? contBase : "") + acc;
@@ -2991,20 +3030,23 @@ async function runCompletion(conv, opts) {
     last.vi = last.variants.length - 1;
   }
   save();
-  // Final re-render: if the reader was following the stream, land on the true bottom (the whole answer
-  // is visible); otherwise keep them exactly where they had scrolled to.
-  const keepTop = box.scrollTop;
-  const wasFollowing = autoScroll;
-  // renderSidebar 会因 innerHTML 重建把侧栏滚动弹回顶部；最后这次 render 保住其滚动位置（保留发送时的定位、不抖回顶部）。
+  // Final re-render. 后台对话（非当前视图）完成时只刷新侧栏，绝不动当前视图的滚动/正文。
   const convList = document.getElementById("conv-list");
   const sbKeep = convList ? convList.scrollTop : null;
-  renderMessages(); renderSidebar();   // pinTop 仍非空 → 这轮 updateScrollBtn 不会误显按钮
-  if (sbKeep != null) convList.scrollTop = sbKeep;
-  pinTop = null;   // 紧挨着设最终 scrollTop 才释放流式锚定，中间不留「按钮闪一下」的空帧
-  box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
-  lastSetTop = box.scrollTop;
-  updateScrollBtn();
-  updateComposerToggles();   // 刷新压缩按钮上的上下文用量提示
+  if (isCurrent) {
+    const keepTop = box.scrollTop;
+    const wasFollowing = (pinTop == null) && autoScroll;   // 「钉着 20% 分界」就保持在锚点位置；只有真正未钉、在跟随底部时才落到底（切回流式对话时切换处理器会把 autoScroll 置真，必须用 pinTop 排除，否则答完瞬间跳底）
+    renderMessages(); renderSidebar();   // pinTop 仍非空 → 这轮 updateScrollBtn 不会误显按钮
+    if (sbKeep != null) convList.scrollTop = sbKeep;
+    pinTop = null;   // 紧挨着设最终 scrollTop 才释放流式锚定，中间不留「按钮闪一下」的空帧
+    box.scrollTop = wasFollowing ? box.scrollHeight : keepTop;
+    lastSetTop = box.scrollTop;
+    updateScrollBtn();
+    updateComposerToggles();   // 刷新压缩按钮上的上下文用量提示
+  } else {
+    renderSidebar();   // 后台完成：仅更新侧栏（移除生成中圆点、刷新标题/预览），不碰当前视图
+    if (sbKeep != null) convList.scrollTop = sbKeep;
+  }
   // 首轮只发了附件时，标题在发送时被延后（那时回答还不存在）；此刻回答已就绪，补一次对话命名（由回答生成）。
   if (!conv.titled) maybeTitle(conv);
 }
@@ -3037,7 +3079,7 @@ function undoLastSend() {
 
 // 「继续」：被中断（已停止）的回答从中断处接着生成，保留已有内容，两段用量合并。
 function continueGeneration(index) {
-  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   const conv = currentConv(); if (!conv) return;
   const m = conv.messages[index];
   if (!m || m.role !== "assistant") return;
@@ -3121,7 +3163,7 @@ async function maybeTitle(conv) {
 async function compactContext() {
   const conv = currentConv();
   if (!conv || !conv.messages.length) { toast("当前没有可压缩的对话"); return; }
-  if (abortController) { toast("正在生成，请先停止或等待完成"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   const ref = conv.model || nextModel;
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
@@ -3135,18 +3177,18 @@ async function compactContext() {
   const prompt = "你是一个对话压缩器。请把下面的对话压缩成一段简洁但信息完整的摘要，用于在后续对话中替代原文继续交流。务必保留：关键事实与结论、已做出的决定、涉及的代码/数据/数字、尚未完成的任务、用户的偏好与要求。用客观第三人称陈述，不要寒暄或评论。\n\n" + prior + body;
 
   showStatus("正在压缩上下文…");
-  setSending(true, "compact"); abortController = new AbortController();
+  setSending(true, "compact"); const controller = new AbortController(); streams.set(conv.id, { controller, reason: "compact" });
   try {
-    const r = await streamChat(ref, { system: "", messages: [{ role: "user", content: prompt }] }, { temp: 0.3, maxTokens: 1200, signal: abortController.signal });
+    const r = await streamChat(ref, { system: "", messages: [{ role: "user", content: prompt }] }, { temp: 0.3, maxTokens: 1200, signal: controller.signal });
     const summary = (r.text || "").trim();
     if (!summary) { toast("压缩失败：未返回摘要"); return; }
     conv.compaction = { summary: summary, count: conv.messages.length };
-    save(); renderMessages();
+    save(); if (conv.id === state.currentId) renderMessages();
     toast("已把 " + toSummarize.length + " 条消息压缩为摘要");
   } catch (e) {
     if (e.name !== "AbortError") toast("压缩失败：" + e.message);
   } finally {
-    setSending(false); abortController = null; hideStatus();
+    streams.delete(conv.id); if (conv.id === state.currentId) setSending(false); hideStatus();
   }
 }
 
@@ -4535,7 +4577,7 @@ document.getElementById("compact-btn").onclick = () => compactContext();
 document.getElementById("file-input").onchange = (e) => { handleFiles(e.target.files); e.target.value = ""; };
 
 const sendBtn = document.getElementById("send");
-sendBtn.onclick = () => { if (abortController) abortController.abort(); else sendMessage(); };
+sendBtn.onclick = () => { const s = currentStream(); if (s) s.controller.abort(); else sendMessage(); };
 
 const input = document.getElementById("input");
 input.addEventListener("input", () => { autoGrow(); closeEffortPop(); updateSlash(); updateSendButton(); });
@@ -4566,9 +4608,9 @@ input.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); closePromptPop(); return; }
   }
   // Esc 正在生成 → 第一次停止（保留半截回答，操作栏出现「继续」）；停止后再按一次 Esc → 撤销这次「全新发送」，prompt 退回输入框
-  if (e.key === "Escape" && abortController) { e.preventDefault(); abortController.abort(); return; }
-  if (e.key === "Escape" && !abortController && canUndoSend()) { e.preventDefault(); undoLastSend(); return; }
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!abortController) sendMessage(); }
+  if (e.key === "Escape" && currentStreaming()) { e.preventDefault(); currentStream().controller.abort(); return; }
+  if (e.key === "Escape" && !currentStreaming() && canUndoSend()) { e.preventDefault(); undoLastSend(); return; }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!currentStreaming()) sendMessage(); }
 });
 // Cmd/Ctrl+V 粘贴图片 / 文件到输入框——聊天区任意位置均可，不必先聚焦输入框；纯文本粘贴保持默认行为。
 document.addEventListener("paste", async (e) => {
