@@ -519,8 +519,12 @@ async function downloadMacUpdate(info) {
     return;
   }
   macDownload = { ver, pct: 0 };
-  const entry = ((info && info.files) || []).find(f => /-mac\.zip$/.test(f.url)) || {};
-  const name = entry.url || `Quartz-${ver}-arm64-mac.zip`;
+  // 选与本机架构匹配的 zip（别在 Intel 机上装了 arm64 包，反之亦然）；匹配不到再退回任意 -mac.zip。
+  const files = (info && info.files) || [];
+  const arch = process.arch === "x64" ? "x64" : "arm64";
+  const entry = files.find(f => new RegExp("-" + arch + "-mac\\.zip$").test(f.url))
+             || files.find(f => /-mac\.zip$/.test(f.url)) || {};
+  const name = entry.url || `Quartz-${ver}-${arch}-mac.zip`;
   const url = `https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/v${ver}/${name}`;
   const dir = path.join(app.getPath("userData"), "updates");
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
@@ -528,10 +532,11 @@ async function downloadMacUpdate(info) {
   uSend({ state: "downloading", version: ver, percent: 0 });
   try {
     await downloadTo(url, dest, (pct) => { if (macDownload) macDownload.pct = pct; uSend({ state: "downloading", version: ver, percent: pct }); });
-    if (entry.sha512) {
-      const got = require("crypto").createHash("sha512").update(fs.readFileSync(dest)).digest("base64");
-      if (got !== entry.sha512) throw new Error("下载校验失败");
-    }
+    // 校验强制化：缺 sha512 直接中止，绝不换上未校验的二进制——换包脚本会 xattr 抹掉隔离位、绕过 Gatekeeper，
+    // 一旦装了被替换的包就没有 OS 兜底了。正常 GitHub release 的 latest-mac.yml 一定带 sha512。
+    if (!entry.sha512) throw new Error("更新缺少校验信息（sha512），为安全起见已中止");
+    const got = require("crypto").createHash("sha512").update(fs.readFileSync(dest)).digest("base64");
+    if (got !== entry.sha512) throw new Error("下载校验失败");
     pendingUpdate = { version: ver, zipPath: dest };
     uSend({ state: "ready", version: ver });
   } catch (e) {
@@ -649,7 +654,10 @@ body { margin: 0; background: #fff; color: #1a1a1a; font-family: -apple-system, 
 function buildExportDoc(title, bodyHTML) {
   const katexHref = "file://" + path.join(__dirname, "vendor", "katex", "katex.min.css");
   const safeTitle = String(title || "对话").replace(/[<>&]/g, "");
-  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>' + safeTitle +
+  // 导出文档只需本地 KaTeX 样式/字体 + 内嵌 data: 图片。锁死其它一切——尤其 img-src 只给 data:，
+  // 挡掉模型输出里可能夹带的远程 <img>（否则导出时会向外部发请求，成追踪/外传信标）。
+  const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline' file:; font-src file: data:; base-uri 'none'";
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + csp + '"><title>' + safeTitle +
     '</title><link rel="stylesheet" href="' + katexHref + '"><style>' + EXPORT_CSS +
     '</style></head><body><main class="ex-root">' + bodyHTML + '</main></body></html>';
 }
@@ -670,6 +678,8 @@ ipcMain.handle("export-conversation", async (_e, payload) => {
     fs.writeFileSync(tmpFile, html, "utf8");
     // window width = column (700) + ~30px margin each side, so the PNG is a tight, centred document
     const win = new BrowserWindow({ show: false, width: 760, height: 1000, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false } });
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));       // 导出窗不打开任何新窗口
+    win.webContents.on("will-navigate", (e) => e.preventDefault());          // 也不允许它自己被导航走（防内容里的链接劫持这个 file:// 窗口）
     try {
       await win.loadFile(tmpFile);
       await new Promise(r => setTimeout(r, 300));   // let KaTeX fonts / images settle

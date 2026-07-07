@@ -1419,11 +1419,15 @@ function revealActiveConv(opts) {
 
 /* ===================== Archive (recycle bin for deleted conversations) — managed in 设置 → 数据 ===================== */
 function archiveConversation(c) {
+  // 删除正在生成的对话：先停掉它的流。否则流会孤儿化——停止键/Esc 只对「当前对话」生效，删掉后再也停不下来，
+  // 白烧 token；若随后彻底删除，跑完的答案还会写不回（记录已删）。停止后归档里保留这半截「已停止」的回答。
+  const s = streams.get(c.id); if (s) { try { s.controller.abort(); } catch (e) {} streams.delete(c.id); }
   state.conversations = state.conversations.filter(x => x.id !== c.id);
   state.archived = state.archived || [];
   c.archivedAt = Date.now();
   state.archived.unshift(c);
   if (state.currentId === c.id) state.currentId = (state.conversations[0] && state.conversations[0].id) || null;
+  editingIndex = null;   // 若删的正是行内编辑中的对话，清掉编辑态，避免序号错位到新当前对话
   save(); renderAll();
 }
 function restoreConversation(id) {
@@ -1924,6 +1928,7 @@ function renderMessages() {
     box.style.display = "none"; empty.style.display = "flex";
     updateEmptyHint();
     const fb = document.getElementById("find-bar"); if (fb) fb.hidden = true;
+    updateScrollBtn();   // 空对话：清掉可能从上一条对话残留的「回到底部」按钮（否则切到新对话/缩放窗口时会残留冒出）
     return;
   }
   empty.style.display = "none"; box.style.display = "block";
@@ -2598,6 +2603,7 @@ function snapshotVariant(conv, asstIndex) {
   };
 }
 function switchVariant(asstIndex, newVi) {
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   const conv = currentConv(); if (!conv) return;
   const a = conv.messages[asstIndex];
   if (!a || !Array.isArray(a.variants) || newVi < 0 || newVi >= a.variants.length) return;
@@ -3100,7 +3106,9 @@ function refreshHeaderTitle(conv) {
 function evalTitleFade() {
   const h1 = document.getElementById("conv-title");
   if (!h1) return;
-  h1.classList.toggle("faded", !h1.isContentEditable && h1.scrollWidth > h1.clientWidth + 1);
+  const faded = !h1.isContentEditable && h1.scrollWidth > h1.clientWidth + 1;
+  h1.classList.toggle("faded", faded);
+  h1.title = faded ? (h1.textContent || "") : "";   // 标题被右缘渐隐截断时，悬停看全名（与侧栏项一致）
 }
 
 // Clean a title model's raw output → last non-empty line, stripped of wrapping quotes / trailing punctuation.
@@ -4003,7 +4011,8 @@ function confirmDialog(opts) {
     ok.classList.toggle("danger", opts.danger === true);   // 红色仅用于真正不可逆的操作（导入/恢复/清空），别处处皆红稀释信号
     cancel.textContent = opts.cancelText || "取消";
     bg.classList.add("show"); syncTitleBarOverlay();
-    setTimeout(() => ok.focus(), 0);
+    // 危险操作（导入覆盖/彻底删除/恢复）默认聚焦「取消」，随手回车不会直接执行不可逆动作；非危险确认才默认聚焦「确定」
+    setTimeout(() => (opts.danger === true ? cancel : ok).focus(), 0);
   });
 }
 function closeConfirm(result) {
@@ -4406,6 +4415,7 @@ const MOD = IS_MAC ? "⌘" : "Ctrl";
 function newHere() {
   const conv = currentConv();
   if (!conv || !conv.messages.length) { toast("当前对话为空，无需分界"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }
   if (conv.compaction && conv.compaction.divider && conv.compaction.count === conv.messages.length) { toast("已经在新话题开头了"); return; }
   conv.compaction = { count: conv.messages.length, summary: "", divider: true };
   save(); renderMessages();
@@ -4417,6 +4427,7 @@ function newHere() {
 function clearConversation() {
   const conv = currentConv();
   if (!conv || !conv.messages.length) { toast("当前对话已经是空的"); return; }
+  if (currentStreaming()) { toast("正在生成，请先停止或等待完成"); return; }   // 清空正在流式的对话会清掉 messages，收尾处 conv.messages[targetIndex] 变 undefined → 崩溃
   const snap = { messages: conv.messages.slice(), compaction: conv.compaction, title: conv.title, titled: conv.titled };
   conv.messages = []; conv.compaction = null; conv.title = "新对话"; conv.titled = false;
   save(); renderMessages(); renderSidebar();
@@ -4510,6 +4521,8 @@ document.getElementById("export-chat").onclick = (e) => { e.stopPropagation(); o
 document.getElementById("conv-title").ondblclick = startTitleRename;
 window.addEventListener("resize", evalTitleFade);
 window.addEventListener("resize", updateConvListFade);
+// 缩放窗口后按当前溢出情况重算「回到底部」按钮：空对话隐藏、内容变化时同步显隐（不再靠残留状态）
+window.addEventListener("resize", updateScrollBtn);
 // Open popovers are positioned at fixed coordinates — close them on resize so they don't hang in stale spots.
 window.addEventListener("resize", () => { closePopover(); closePromptPop(); closeEffortPop(); closeSlash(); });
 // Tab focus traps for the two modals
