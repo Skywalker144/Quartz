@@ -46,6 +46,11 @@ function applyConfig(c) {
 }
 
 function keyFor(provider) { const p = cfg && cfg.providers && cfg.providers[provider]; return (p && p.key) ? p.key.trim() : ""; }
+function baseFor(provider) {
+  const p = cfg && cfg.providers && cfg.providers[provider];
+  return ((p && p.baseUrl) || (PROVIDERS[provider] && PROVIDERS[provider].base) || "").trim().replace(/\/+$/, "");
+}
+function apiUrl(provider, path) { return baseFor(provider) + "/" + String(path || "").replace(/^\/+/, ""); }
 
 function applyTheme(theme) {
   const dark = theme === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : theme === "dark";
@@ -166,10 +171,10 @@ async function streamAsk(userText, signal, onDelta) {
     if (topK != null && ref.provider === "openrouter") body.top_k = topK;
     const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
     if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; body.usage = { include: true }; }
-    else if (ref.provider === "openai" || ref.provider === "deepseek") body.stream_options = { include_usage: true };
+    else if ((ref.provider === "openai" && !(cfg.providers.openai && cfg.providers.openai.baseUrl)) || ref.provider === "deepseek") body.stream_options = { include_usage: true };
     // DeepSeek V4 混合模型（pro/flash）默认开启思考——QuickBar 是快速问答，显式关掉思考让回答秒出。
     if (ref.provider === "deepseek") body.thinking = { type: "disabled" };
-    const resp = await fetch(prov.base + "/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal });
+    const resp = await fetch(apiUrl(ref.provider, "chat/completions"), { method: "POST", headers, body: JSON.stringify(body), signal });
     if (!resp.ok) throw new Error(await errText(resp));
     await pumpSSE(resp, (j) => {
       const d = j.choices && j.choices[0] && j.choices[0].delta;
@@ -183,7 +188,7 @@ async function streamAsk(userText, signal, onDelta) {
     if (topP != null) body.top_p = topP;
     if (topK != null) body.top_k = topK;
     const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
-    const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal });
+    const resp = await fetch(apiUrl(ref.provider, "messages"), { method: "POST", headers, body: JSON.stringify(body), signal });
     if (!resp.ok) throw new Error(await errText(resp));
     let inTok = 0, outTok = 0;
     await pumpSSE(resp, (j) => {

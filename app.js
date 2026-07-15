@@ -102,7 +102,7 @@ let editingIndex = null; // index of message being edited inline
 let autoScroll = true;   // follow streaming output only while the user is at the bottom
 let pinTop = null;       // while answering: target scrollTop that keeps the user's message at the top
 let lastSetTop = -1;     // the scrollTop WE last set programmatically — used to tell our scrolls from the user's
-let nodePinned = null;   // after clicking a node: keep THAT node highlighted until the user scrolls manually
+let nodePinned = null;   // while a node-click jump animates, keep that target lit; then resume viewport highlights
 let selPointerDown = false; // mouse held down in the transcript (selecting): pause streaming re-renders so the drag's anchor node isn't replaced
 const mql = window.matchMedia("(prefers-color-scheme: dark)");
 // Smoothly glide scrollTop toward a moving target with a rAF easing loop (buttery during streaming,
@@ -185,13 +185,14 @@ const DEFAULT_USD_CNY = 6.78;
 function freshState() {
   return {
     settings: {
-      providers: { openrouter: { key: "" }, openai: { key: "" }, anthropic: { key: "" }, deepseek: { key: "" }, google: { key: "" } },
+      providers: { openrouter: { key: "" }, openai: { key: "", baseUrl: "" }, anthropic: { key: "", baseUrl: "" }, deepseek: { key: "" }, google: { key: "" } },
       appearance: { theme: "auto", fontFamily: "system", fontSize: 15, contentPct: 90, density: "comfortable", codeTheme: "vivid", accent: "clear", accentCustom: "#d6d6d6" },
       models: [],   // empty on a fresh install — the user adds their own; the first one added becomes the default
       prompts: [{ id: "daily-default", name: "日常", text: DAILY_PROMPT }, { id: "expert-default", name: "深度", text: EXPERT_PROMPT }],
       defaults: {
         chat: null,    // set automatically when the first model is added (see addModel)
         title: null,
+        vision: null,  // 读图回退模型：发图时若当前模型不支持读图，自动切到它（未设置则仅提示）
         promptId: "daily-default", temp: 1, maxTokens: null, topP: null, topK: null,
       },
       sidebar: { width: 264, collapsed: false },
@@ -318,7 +319,7 @@ function ensureShape(s) {
 
   s.settings = Object.assign({}, f.settings, s.settings);
   s.settings.providers = Object.assign({}, f.settings.providers, s.settings.providers);
-  PROVIDER_ORDER.forEach(pk => { if (!s.settings.providers[pk]) s.settings.providers[pk] = { key: "" }; });
+  PROVIDER_ORDER.forEach(pk => { s.settings.providers[pk] = Object.assign({}, f.settings.providers[pk] || { key: "" }, s.settings.providers[pk] || {}); });
   s.settings.appearance = Object.assign({}, f.settings.appearance, s.settings.appearance);
   s.settings.defaults = Object.assign({}, f.settings.defaults, s.settings.defaults);
   s.settings.sidebar = Object.assign({}, f.settings.sidebar, s.settings.sidebar);
@@ -341,10 +342,19 @@ function ensureShape(s) {
   }
 
   if (!hadModels) s.settings.models = [];
-  [s.settings.defaults.chat, s.settings.defaults.title].forEach(r => {
+  [s.settings.defaults.chat, s.settings.defaults.title, s.settings.defaults.vision].forEach(r => {
     if (r && r.provider && r.model && !s.settings.models.some(m => m.provider === r.provider && m.model === r.model))
       s.settings.models.push({ provider: r.provider, model: r.model });
   });
+  // One-time: seed a 读图 fallback for existing installs (pick the first vision-capable enabled model).
+  // Guarded by a flag so a deliberate later "（不设置）" is never re-seeded on the next boot.
+  if (!s.settings.visionSeeded) {
+    s.settings.visionSeeded = true;
+    if (s.settings.defaults.vision == null) {
+      const v = (s.settings.models || []).find(m => visionSupport(m) === "yes");
+      if (v) s.settings.defaults.vision = { provider: v.provider, model: v.model };
+    }
+  }
 
   // One-time: bump the legacy 0.7 default temperature up to 1
   if (!hadTempBumped && s.settings.defaults.temp === 0.7) s.settings.defaults.temp = 1;
@@ -514,7 +524,10 @@ function quickConfigPayload() {
   const set = state.settings;
   const q = set.quick || {};
   const providers = {};
-  for (const pk of PROVIDER_ORDER) providers[pk] = { key: (set.providers[pk] && set.providers[pk].key) || "" };
+  for (const pk of PROVIDER_ORDER) providers[pk] = {
+    key: (set.providers[pk] && set.providers[pk].key) || "",
+    baseUrl: (set.providers[pk] && set.providers[pk].baseUrl) || "",
+  };
   // model: quick override, else the default chat model — carry the auto-generated display name
   const chat = (q.model && q.model.provider && q.model.model) ? clone(q.model) : clone(set.defaults.chat);
   if (chat && chat.model) chat.name = prettyModel(chat.model, chat.provider);
@@ -543,6 +556,16 @@ function pushQuickConfig() {
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function currentConv() { return state.conversations.find(c => c.id === state.currentId) || null; }
 function keyOf(ref) { if (!ref || !ref.provider) return ""; const p = state.settings.providers[ref.provider]; return (p && p.key ? p.key.trim() : ""); }
+function customBaseOf(provider) {
+  const p = state.settings.providers[provider];
+  return (p && p.baseUrl ? String(p.baseUrl).trim().replace(/\/+$/, "") : "");
+}
+function baseOf(provider) {
+  const prov = PROVIDERS[provider];
+  return customBaseOf(provider) || (prov && prov.base) || "";
+}
+function apiUrl(provider, path) { return baseOf(provider) + "/" + String(path || "").replace(/^\/+/, ""); }
+function hasCustomBase(provider) { return !!customBaseOf(provider); }
 function activeRef() { const c = currentConv(); return (c && c.model) || nextModel; }
 function anyKey() { return PROVIDER_ORDER.some(pk => keyOf({ provider: pk })); }
 
@@ -558,6 +581,7 @@ function addModel(r) {
   const d = state.settings.defaults;
   if (!d.chat) { d.chat = { provider: r.provider, model: r.model }; nextModel = clone(d.chat); }
   if (!d.title) d.title = { provider: r.provider, model: r.model };
+  if (!d.vision && visionSupport(r) === "yes") d.vision = { provider: r.provider, model: r.model };   // 首个能读图的模型顺带设为读图回退
   save();
 }
 function removeModel(r) { state.settings.models = state.settings.models.filter(m => !modelsEqual(m, r)); save(); }
@@ -674,6 +698,21 @@ function reasoningSupport(ref) {
   }
   const id = (ref.model || "").toLowerCase();
   if (/(^|\/)o[1-4](-|$)|o[1-4]-(mini|preview)|gpt-5|deepseek-r|deepseek-v[4-9]|[-/]r1\b|reason|think|gemini-(2\.5|3)|qwen3|magistral|grok-(3|4)/.test(id)) return "yes";
+  return "unknown";
+}
+// "yes" | "no" | "unknown" — 能否读图。只有 "no" 来自可靠数据（DeepSeek 接口直接拒图；
+// OpenRouter 目录标注了输入模态），所以「读图回退 / 拦截」不会对能读图的模型误判。
+function visionSupport(ref) {
+  if (!ref) return "unknown";
+  if (ref.provider === "deepseek") return "no";                       // image_url → 400
+  if (ref.provider === "openrouter" && orCatalog && orCatalog.length) {
+    const e = orCatalog.find(m => m.id === ref.model);
+    if (e && typeof e.visionOk === "boolean") return e.visionOk ? "yes" : "no";
+  }
+  const prov = PROVIDERS[ref.provider];
+  if (prov && prov.kind === "anthropic") return "yes";                // Claude 3+ 均可读图
+  const id = (ref.model || "").toLowerCase();
+  if (/gemini|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-5|chatgpt-4o|claude|-vl\b|vision|pixtral|llava|llama-3\.2/.test(id)) return "yes";
   return "unknown";
 }
 
@@ -1294,6 +1333,7 @@ function relTime(ts) {
 function buildConvEl(c) {
   const el = document.createElement("div");
   el.className = "conv" + (c.id === state.currentId ? " active" : "") + (c.pinned ? " pinned" : "") + (isStreaming(c.id) ? " gen" : "");   // gen：该对话正在生成（后台或当前）→ 标题前脉冲圆点
+  el.dataset.convId = c.id;
   el.tabIndex = 0; el.setAttribute("role", "option"); el.setAttribute("aria-selected", c.id === state.currentId ? "true" : "false");
   el.innerHTML =
     '<div class="conv-row"><span class="title"></span>' +
@@ -1932,7 +1972,8 @@ function renderMessages() {
     return;
   }
   empty.style.display = "none"; box.style.display = "block";
-  if (conv.id !== lastConvSeen) { box.classList.remove("switch-in"); void box.offsetWidth; box.classList.add("switch-in"); }
+  const switchedConversation = conv.id !== lastConvSeen;
+  if (switchedConversation) { box.classList.remove("switch-in"); void box.offsetWidth; box.classList.add("switch-in"); }
   lastConvSeen = conv.id;
   box.innerHTML = "";
   const boundary = conv.compaction ? Math.min(conv.compaction.count, conv.messages.length) : -1;
@@ -1941,11 +1982,14 @@ function renderMessages() {
     if (i + 1 === boundary) box.appendChild(compactionMarker(conv));
   });
   enhanceCode(box);
-  if (autoScroll) { box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop; }
+  // 每次切换对话都从消息区顶部开始，避免沿用上一条对话的滚动位置导致首行大幅漂移。
+  // 同一对话内的重渲染仍保留原有的自动跟随/手动滚动行为。
+  if (switchedConversation) { box.scrollTop = 0; lastSetTop = 0; autoScroll = false; pinTop = null; }
+  else if (autoScroll) { box.scrollTop = box.scrollHeight; lastSetTop = box.scrollTop; }
   // 多对话并发：DOM 重建后按「当前对话的流」恢复滚动锚——「全新发送」的流把 prompt↔回答分界钉在距顶 ~20%（切走再切回也保持，不退化成跟随底部）；
   // 无流 / 原地重答（pin 假）则清掉锚、跟随底部。发送当下（流还没注册）走 else 清空，紧接着 runCompletion 再算一次，两边一致。
   const _cs = currentStream();
-  if (_cs && _cs.pin) {
+  if (!switchedConversation && _cs && _cs.pin) {
     const _r = box.querySelector('.msg-row[data-index="' + _cs.targetIndex + '"]');
     if (_r) { pinTop = Math.max(0, _r.offsetTop - Math.round(box.clientHeight * 0.2)); box.scrollTop = Math.min(pinTop, box.scrollHeight - box.clientHeight); lastSetTop = box.scrollTop; }
   } else pinTop = null;
@@ -2332,31 +2376,61 @@ function renderNodemap() {
     const item = document.createElement("button"); item.className = "nm-item"; item.dataset.idx = i;
     if (m.nodeTitle) item.textContent = m.nodeTitle;
     else { item.textContent = plainText(m).slice(0, 60); item.classList.add("untitled"); }
-    item.onclick = () => { nodePinned = i; scrollToMessage(i); setNodeActive(i); };
+    item.onclick = (e) => {
+      nodePinned = i;
+      scrollToMessage(i);
+      setNodeActive(i);
+      // A pointer click leaves the button focused, which would keep :focus-within open
+      // after the pointer leaves. Keyboard activation keeps focus for accessibility.
+      if (e.detail > 0) item.blur();
+      setTimeout(() => {
+        if (nodePinned === i) nodePinned = null;
+        updateNodeActive();
+      }, 300);
+    };
     panel.appendChild(item);
   });
   if (divAt >= 0 && !divDone) addPanelDivider();   // boundary sits after the last turn (just ran /newhere) → panel marker only
   queueNodeTitles(conv);
   updateNodeActive();
 }
-function setNodeActive(idx) {
+function setNodeActive(indices) {
   const wrap = document.getElementById("nodemap"); if (!wrap) return;
-  wrap.querySelectorAll(".nm-bar, .nm-item").forEach(el => el.classList.toggle("active", +el.dataset.idx === idx));
+  const active = new Set(Array.isArray(indices) ? indices : [indices]);
+  wrap.querySelectorAll(".nm-bar, .nm-item").forEach(el => el.classList.toggle("active", active.has(+el.dataset.idx)));
 }
-// scroll-spy: highlight the turn whose question has scrolled to (or past) the top of the viewport
+// Scroll-spy: every question/answer turn intersecting the visible transcript gets a lit node.
 function updateNodeActive() {
   if (!nodeUserIndices.length) return;
-  if (nodePinned != null) { setNodeActive(nodePinned); return; }   // user jumped to a node; keep it lit until they scroll
+  if (nodePinned != null) { setNodeActive(nodePinned); return; }   // keep the jump target stable during its short animation
   const box = document.getElementById("messages");
   if (!box) return;
-  const boxTop = box.getBoundingClientRect().top;
-  let active = nodeUserIndices[0];
-  for (const idx of nodeUserIndices) {
+  const boxRect = box.getBoundingClientRect();
+  const composer = document.getElementById("composer-inner");
+  const visibleTop = boxRect.top;
+  const visibleBottom = composer ? Math.min(boxRect.bottom, composer.getBoundingClientRect().top) : boxRect.bottom;
+  const messageRows = box.querySelectorAll('.msg-row[data-index]');
+  const lastBottom = messageRows.length ? messageRows[messageRows.length - 1].getBoundingClientRect().bottom : visibleBottom;
+  const active = [];
+  for (let n = 0; n < nodeUserIndices.length; n++) {
+    const idx = nodeUserIndices[n];
     const row = box.querySelector('.msg-row[data-index="' + idx + '"]');
     if (!row) continue;
-    if (row.getBoundingClientRect().top - boxTop <= 90) active = idx; else break;
+    const nextIdx = nodeUserIndices[n + 1];
+    const nextRow = nextIdx == null ? null : box.querySelector('.msg-row[data-index="' + nextIdx + '"]');
+    const turnTop = row.getBoundingClientRect().top;
+    const turnBottom = nextRow ? nextRow.getBoundingClientRect().top : lastBottom;
+    if (turnBottom > visibleTop && turnTop < visibleBottom) active.push(idx);
   }
-  if (isNearBottom(box)) active = nodeUserIndices[nodeUserIndices.length - 1];
+  // During elastic scrolling there can briefly be no intersection; retain a stable nearest node.
+  if (!active.length) {
+    let nearest = nodeUserIndices[0];
+    for (const idx of nodeUserIndices) {
+      const row = box.querySelector('.msg-row[data-index="' + idx + '"]');
+      if (row && row.getBoundingClientRect().top <= visibleTop) nearest = idx;
+    }
+    active.push(nearest);
+  }
   setNodeActive(active);
 }
 function scheduleNodeActive() { if (nodeRaf) return; nodeRaf = requestAnimationFrame(() => { nodeRaf = 0; updateNodeActive(); }); }
@@ -2729,7 +2803,7 @@ async function streamChat(ref, payload, opts) {
       if (opts.web) plugins.push({ id: "web", max_results: 5 });
       if (plugins.length) body.plugins = plugins;
       if (opts.reasoning) body.reasoning = { effort: opts.effort || "medium" };
-    } else if (ref.provider === "openai" || ref.provider === "deepseek") {
+    } else if ((ref.provider === "openai" && !hasCustomBase("openai")) || ref.provider === "deepseek") {
       body.stream_options = { include_usage: true };
     }
     // DeepSeek V4 hybrid models (deepseek-v4-flash/pro) think by default — control it explicitly.
@@ -2738,7 +2812,7 @@ async function streamChat(ref, payload, opts) {
     }
     const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
     if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; }
-    const resp = await fetch(prov.base + "/chat/completions", { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
+    const resp = await fetch(apiUrl(ref.provider, "chat/completions"), { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
     if (!resp.ok) throw Object.assign(new Error(await errText(resp)), { status: resp.status });
     await pumpSSE(resp, (json) => {
       const delta = json.choices && json.choices[0] && json.choices[0].delta;
@@ -2765,7 +2839,7 @@ async function streamChat(ref, payload, opts) {
       if (opts.topK != null) body.top_k = opts.topK;
     }
     const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
-    const resp = await fetch(prov.base + "/messages", { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
+    const resp = await fetch(apiUrl(ref.provider, "messages"), { method: "POST", headers, body: JSON.stringify(body), signal: opts.signal });
     if (!resp.ok) throw Object.assign(new Error(await errText(resp)), { status: resp.status });
     let inTok = 0, outTok = 0;
     await pumpSSE(resp, (json) => {
@@ -2830,15 +2904,62 @@ function forkConversation(index) {
   toast("已分支到新对话", { label: "回到原对话", fn: () => { state.currentId = srcId; editingIndex = null; save(); renderAll(); } });
 }
 
-// DeepSeek 接口不支持图片（image_url 会直接 400）：发送 / 重答前拦截并给出清晰提示。
+// 本次请求真正会发给模型的历史消息。与 runCompletion 的 history=sliced 裁剪保持一致：
+// 压缩边界（compaction.count）之前的历史已被摘要文本替代、不随请求发出，故不计入。
+// endExclusive：历史终点（重答=at、继续=cont、普通发送=消息数）；缺省=全部。
+// newOutgoing=true 表示本次还会在边界之后追加一条新用户消息（普通发送尚未 push 它），
+// 它保证裁剪一定发生——即便此刻边界之后暂无消息（正是「压缩后换模型再发」的情形）。
+function outgoingHistory(conv, endExclusive, newOutgoing) {
+  if (!conv || !conv.messages) return [];
+  let base = conv.messages.slice(0, endExclusive == null ? conv.messages.length : endExclusive);
+  if (conv.compaction) {
+    const cut = Math.min(conv.compaction.count, base.length);
+    const sliced = base.slice(cut);
+    if (sliced.length || newOutgoing) base = sliced;
+  }
+  return base;
+}
+
+// 不支持读图的模型（如 DeepSeek，image_url 会直接 400）：发送 / 重答前拦截并给出清晰提示。
+// 只检查 msgs（本次真正会发出的历史，见 outgoingHistory）+ 本次新附件 extraAtts——
+// 被压缩进摘要、不会发送的历史图片不应触发拦截。visionSupport 只在可靠数据下判 "no"，不会误拦能读图的模型。
 // PDF 不拦——toOpenAIContent 已对不支持的提供方降级为文字说明，不会炸请求。
-function imageBlockFor(ref, conv, extraAtts) {
-  if (!ref || ref.provider !== "deepseek") return false;
+function imageBlockFor(ref, msgs, extraAtts) {
+  if (!ref || visionSupport(ref) !== "no") return false;
   const hasImg = (l) => (l || []).some(a => a.kind === "image");
-  if (hasImg(extraAtts) || (conv && conv.messages.some(m => hasImg(m.attachments)))) {
-    toast("DeepSeek 模型不支持图片，请更换模型或移除图片后再试");
+  if (hasImg(extraAtts) || (msgs || []).some(m => hasImg(m.attachments))) {
+    toast("当前模型不支持读图，请更换模型或移除图片后再试");
     return true;
   }
+  return false;
+}
+
+// 发图但当前模型读不了图时：优先切到「读图模型」默认项后继续发送；未配置 / 配置无效则明确提示并拦截。
+// 返回 true = 已拦截（调用方应 return，不再发送）；false = 可继续（可能已切换到读图模型）。
+function ensureVisionModel(atts) {
+  const ref = activeRef();
+  const hasImg = (atts || []).some(a => a.kind === "image");
+  if (!hasImg || visionSupport(ref) !== "no") return false;           // 无图 / 当前模型能读图 → 不干预
+  const vref = state.settings.defaults.vision;
+  if (!vref || !vref.model) {
+    openSettings("defaults");
+    toast("当前模型不支持读图，请在「默认模型 → 读图模型」里指定一个，或更换模型 / 移除图片");
+    return true;
+  }
+  if (visionSupport(vref) === "no") {
+    openSettings("defaults");
+    toast("已设置的读图模型「" + modelLabel(vref) + "」本身不支持读图，请改选一个支持读图的模型");
+    return true;
+  }
+  if (!keyOf(vref)) {
+    _msProvider = vref.provider; openSettings("services");
+    toast("读图模型「" + modelLabel(vref) + "」还没配置 API Key，请先填写");
+    return true;
+  }
+  const c = currentConv();
+  if (c) c.model = clone(vref); else nextModel = clone(vref);         // 切换后 runCompletion 会自动沿用（conv.model = activeRef）
+  save(); updateModelPill();
+  toast("当前模型不支持读图，已切换到读图模型「" + modelLabel(vref) + "」");
   return false;
 }
 
@@ -2848,10 +2969,12 @@ async function sendMessage() {
   const text = input.value.trim();
   const atts = pending.slice();
   if (!text && !atts.length) return;
-  const ref = activeRef();
+  let ref = activeRef();
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
+  if (ensureVisionModel(atts)) return;   // 发图但当前模型读不了图 → 切到读图默认模型（或提示配置）；输入与图片留在原处
+  ref = activeRef();                     // 可能已被 ensureVisionModel 切换
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
-  if (imageBlockFor(ref, currentConv(), atts)) return;   // 输入与图片留在原处，便于换模型再发
+  if (imageBlockFor(ref, outgoingHistory(currentConv(), null, true), atts)) return;   // 兜底：仍读不了图则拦截（正常已由上面切换/提示处理）
 
   let conv = currentConv();
   if (!conv) { newConversation(); conv = currentConv(); }
@@ -2868,12 +2991,14 @@ async function runCompletion(conv, opts) {
   const ref = activeRef();
   if (!ref || !ref.model) { openSettings("services"); toast("请先在「模型服务」里添加一个模型"); return; }
   if (!keyOf(ref)) { _msProvider = ref.provider; openSettings("services"); toast("请先配置 " + (PROVIDERS[ref.provider] ? PROVIDERS[ref.provider].label : ref.provider) + " 的 API Key"); return; }
-  if (imageBlockFor(ref, conv, null)) return;   // 覆盖重答 / 继续：整段历史会一并发出，含图历史同样拦截
-  conv.model = clone(ref);
   // Regenerate in place (keep the following turns) when given a target index; otherwise append a new turn.
   const at = (opts && typeof opts.regenAt === "number" && conv.messages[opts.regenAt] && conv.messages[opts.regenAt].role === "assistant") ? opts.regenAt : null;
   // 继续生成：保留这条回答已有的内容，从中断处接着写（不清空、不新建）。
   const cont = (at == null && opts && typeof opts.continueAt === "number" && conv.messages[opts.continueAt] && conv.messages[opts.continueAt].role === "assistant") ? opts.continueAt : null;
+  // 覆盖重答 / 继续 / 追加：只检查本次真正会发出的历史（压缩边界前的历史已被摘要替代、通常不发送，
+  // 与下方 history=sliced 的裁剪一致）。endExclusive：重答=at、继续=cont、追加=当前消息数（占位回答尚未 push）。
+  if (imageBlockFor(ref, outgoingHistory(conv, cont != null ? cont : (at != null ? at : conv.messages.length), false), null)) return;
+  conv.model = clone(ref);
   let targetIndex, contBase = "";
   if (cont != null) {
     const tg = conv.messages[cont];
@@ -3478,6 +3603,7 @@ function switchSection(sec) {
   if (sec === "defaults") {
     populateModelSelect(document.getElementById("chat-model-sel"), state.settings.defaults.chat);
     populateModelSelect(document.getElementById("title-model-sel"), state.settings.defaults.title);
+    populateModelSelect(document.getElementById("vision-model-sel"), state.settings.defaults.vision, "（不设置）");
   }
   if (sec === "quick") {
     populateQuickModelSelect();
@@ -3688,13 +3814,17 @@ function codeToKey(code, key) {
   };
   return map[code] || null;
 }
-function populateModelSelect(sel, currentRef) {
+function populateModelSelect(sel, currentRef, noneLabel) {
   sel.innerHTML = "";
   const list = state.settings.models.slice();
   if (currentRef && !list.some(m => modelsEqual(m, currentRef))) list.unshift(currentRef);
-  if (!list.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "（请先在「管理模型」中添加模型）"; sel.appendChild(o); return; }
+  if (noneLabel) { const o = document.createElement("option"); o.value = ""; o.textContent = noneLabel; sel.appendChild(o); }   // 可选项（如「读图模型」允许不设置）
+  if (!list.length) {
+    if (!noneLabel) { const o = document.createElement("option"); o.value = ""; o.textContent = "（请先在「管理模型」中添加模型）"; sel.appendChild(o); }
+    sel.value = ""; return;
+  }
   list.forEach(m => { const o = document.createElement("option"); o.value = refKey(m); o.textContent = modelLabel(m); o.title = (PROVIDERS[m.provider] ? PROVIDERS[m.provider].label : m.provider) + " · " + m.model; sel.appendChild(o); });
-  if (currentRef) sel.value = refKey(currentRef);
+  sel.value = currentRef ? refKey(currentRef) : "";
 }
 async function fillAbout() {
   try {
@@ -3740,6 +3870,7 @@ function fillSettings() {
   const d = state.settings.defaults;
   populateModelSelect(document.getElementById("chat-model-sel"), d.chat);
   populateModelSelect(document.getElementById("title-model-sel"), d.title);
+  populateModelSelect(document.getElementById("vision-model-sel"), d.vision, "（不设置）");
   document.getElementById("set-temp").value = d.temp != null ? d.temp : 1;
   document.getElementById("set-maxtok").value = d.maxTokens || "";
   document.getElementById("set-topp").value = d.topP != null ? d.topP : "";
@@ -3831,7 +3962,7 @@ async function testProvider(pk, btn, status) {
     const headers = prov.kind === "anthropic"
       ? { "x-api-key": k, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
       : { "Authorization": "Bearer " + k };
-    const resp = await fetch(prov.base + "/models", { headers });
+    const resp = await fetch(apiUrl(pk, "models"), { headers });
     if (resp.ok) { status.textContent = "✓ 连接正常"; status.classList.add("ok"); }
     else if (resp.status === 401 || resp.status === 403) { status.textContent = "✗ Key 无效（" + resp.status + "）"; status.classList.add("bad"); }
     else { status.textContent = "✗ 返回 " + resp.status; status.classList.add("bad"); }
@@ -3854,7 +3985,7 @@ function setupSettingsLive() {
     const el = document.getElementById("key-" + pk); if (!el) return;
     el.addEventListener("input", () => {
       const had = !!(state.settings.providers[pk] && state.settings.providers[pk].key);
-      state.settings.providers[pk] = { key: el.value.trim() };
+      state.settings.providers[pk] = Object.assign({}, state.settings.providers[pk], { key: el.value.trim() });
       updateKeyDots();
       if (!had && el.value.trim()) onProviderConnected(pk);   // first time this provider gets a key
       save();
@@ -3882,6 +4013,7 @@ function setupSettingsLive() {
     save(); updateModelPill();
   });
   document.getElementById("title-model-sel").addEventListener("change", e => { if (e.target.value) { state.settings.defaults.title = parseRefKey(e.target.value); save(); } });
+  document.getElementById("vision-model-sel").addEventListener("change", e => { state.settings.defaults.vision = e.target.value ? parseRefKey(e.target.value) : null; save(); });
   document.getElementById("set-temp").addEventListener("change", e => { const t = e.target.value; state.settings.defaults.temp = t === "" ? null : Number(t); save(); });
   document.getElementById("set-maxtok").addEventListener("change", e => { const mt = e.target.value; state.settings.defaults.maxTokens = mt === "" ? null : Number(mt); save(); });
   document.getElementById("set-topp").addEventListener("change", e => { const v = e.target.value; state.settings.defaults.topP = v === "" ? null : Number(v); save(); });
@@ -4060,6 +4192,7 @@ function applyProviderLogos(root) {
 }
 const KEY_URLS = { openrouter: "https://openrouter.ai/keys", openai: "https://platform.openai.com/api-keys", anthropic: "https://console.anthropic.com/settings/keys", deepseek: "https://platform.deepseek.com/api_keys", google: "https://aistudio.google.com/app/apikey" };
 const KEY_PH = { openrouter: "sk-or-v1-…", openai: "sk-…", anthropic: "sk-ant-…", deepseek: "sk-…", google: "AIza…" };
+const CUSTOM_BASE_PROVIDERS = new Set(["openai", "anthropic"]);
 
 function renderServices() { renderMsProviders(); renderMsDetail(); applyProviderLogos(); }
 function renderMsProviders() {
@@ -4086,6 +4219,11 @@ function renderMsDetail() {
       + '<div class="key-input-wrap"><input type="password" id="ms-key" placeholder="' + KEY_PH[pk] + '" autocomplete="off" spellcheck="false">'
       + '<button type="button" class="key-eye" id="ms-eye">' + ic("eye", 16) + '</button></div>'
       + '<div class="key-row2"><button type="button" class="btn small" id="ms-test">检测</button><span class="key-test-status" id="ms-teststat"></span></div></div>'
+    + (CUSTOM_BASE_PROVIDERS.has(pk)
+      ? '<div class="ms-field ms-base-field"><label>Base URL <span>第三方兼容接口（可选）</span></label>'
+        + '<input id="ms-base" type="url" placeholder="' + prov.base + '" autocomplete="off" spellcheck="false">'
+        + '<div class="ms-help">留空使用官方地址；请填写 API 版本根路径，例如 https://example.com/v1，无需填写 /chat/completions 或 /messages。</div></div>'
+      : '')
     + '<div class="group-label">已启用的模型</div><div id="ms-enabled" class="ms-enabled"></div>'
     + '<div class="ms-actions"><button class="btn small" id="ms-fetch">从 API 获取模型 ↻</button>'
       + '<div class="model-row ms-add-row"><input id="ms-add" placeholder="或手动输入模型 ID 添加"><button class="btn small" id="ms-add-btn">添加</button></div></div>'
@@ -4094,7 +4232,7 @@ function renderMsDetail() {
   const keyEl = box.querySelector("#ms-key"); keyEl.value = key || "";
   let connected = !!key;   // 打开面板时该服务商是否已配置过 key（已配置则不再触发「已接入」副作用）
   keyEl.addEventListener("input", () => {   // 实时保存，但不在这里触发「已接入」——否则敲第一个字符就误报成功
-    state.settings.providers[pk] = { key: keyEl.value.trim() };
+    state.settings.providers[pk] = Object.assign({}, state.settings.providers[pk], { key: keyEl.value.trim() });
     renderMsProviders();   // 左栏圆点实时反映「已填 key」
     save();
   });
@@ -4106,6 +4244,26 @@ function renderMsDetail() {
   keyEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); keyEl.blur(); } });   // 回车 = 提交并移走焦点（blur 会触发上面的 change → 接入）
   const eye = box.querySelector("#ms-eye");
   eye.onclick = () => { const s = keyEl.type === "password"; keyEl.type = s ? "text" : "password"; eye.innerHTML = ic(s ? "eye-off" : "eye", 16); };
+  const baseEl = box.querySelector("#ms-base");
+  if (baseEl) {
+    baseEl.value = customBaseOf(pk);
+    baseEl.addEventListener("input", () => {
+      state.settings.providers[pk] = Object.assign({}, state.settings.providers[pk], { baseUrl: baseEl.value.trim() });
+      delete _msFetched[pk];
+      save();
+    });
+    baseEl.addEventListener("change", () => {
+      const v = baseEl.value.trim();
+      if (!v) return;
+      try {
+        const u = new URL(v);
+        if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
+        baseEl.value = v.replace(/\/+$/, "");
+        state.settings.providers[pk].baseUrl = baseEl.value;
+        save();
+      } catch (_) { toast("Base URL 必须是以 http:// 或 https:// 开头的完整地址"); baseEl.focus(); }
+    });
+  }
   box.querySelector("#ms-test").onclick = (e) => testProvider(pk, e.currentTarget, box.querySelector("#ms-teststat"));
   box.querySelector("#ms-fetch").onclick = () => fetchAndShowModels(pk);
   const addBtn = box.querySelector("#ms-add-btn"), addIn = box.querySelector("#ms-add");
@@ -4184,7 +4342,7 @@ async function fetchProviderModels(pk) {
   const headers = prov.kind === "anthropic"
     ? { "x-api-key": key || "", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }
     : (key ? { Authorization: "Bearer " + key } : {});
-  const resp = await fetch(prov.base + "/models", { headers });
+  const resp = await fetch(apiUrl(pk, "models"), { headers });
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   const j = await resp.json();
   const arr = j.data || j.models || [];
@@ -4195,6 +4353,9 @@ async function fetchProviderModels(pk) {
       pin: m.pricing ? Number(m.pricing.prompt) * 1e6 : null,
       pout: m.pricing ? Number(m.pricing.completion) * 1e6 : null,
       reasoningOk: Array.isArray(m.supported_parameters) && (m.supported_parameters.includes("reasoning") || m.supported_parameters.includes("include_reasoning")),
+      visionOk: Array.isArray(m.architecture && m.architecture.input_modalities)
+        ? m.architecture.input_modalities.includes("image")
+        : (m.architecture && typeof m.architecture.modality === "string" ? m.architecture.modality.includes("image") : undefined),
     })).sort((a, b) => a.id.localeCompare(b.id));
   }
   return arr.map(m => ({ id: m.id || m.name || "", name: m.id || m.name || "" })).filter(m => m.id).sort((a, b) => a.id.localeCompare(b.id));
@@ -4534,6 +4695,23 @@ document.addEventListener("keydown", (e) => {
     if (anyModalOpen()) return;
     e.preventDefault(); focusSearch();
   }
+});
+// ⌘B / Ctrl+B toggles the sidebar; ⌘1…⌘9 / Ctrl+1…Ctrl+9 open the first nine visible conversations.
+// Reading the rendered rows keeps the shortcut order identical to the sidebar order (including search results).
+document.addEventListener("keydown", (e) => {
+  if (e.altKey || e.shiftKey || (!e.metaKey && !e.ctrlKey) || anyModalOpen()) return;
+  if (e.key === "b" || e.key === "B") {
+    e.preventDefault(); toggleSidebar(); return;
+  }
+  const n = Number(e.key);
+  if (!Number.isInteger(n) || n < 1 || n > 9) return;
+  e.preventDefault();
+  const row = document.querySelectorAll("#conv-list .conv")[n - 1];
+  if (!row || row.dataset.convId === state.currentId) return;
+  const c = state.conversations.find(x => x.id === row.dataset.convId);
+  if (!c) return;
+  state.currentId = c.id; editingIndex = null; autoScroll = true; nodePinned = null;
+  save(); renderAll();
 });
 document.getElementById("open-settings").onclick = () => openSettings();
 { const sa = document.getElementById("sidebar-profile"); if (sa) sa.onclick = () => {
@@ -4890,13 +5068,22 @@ setInterval(autoBackup, 60 * 60 * 1000);
 { const ob = document.getElementById("data-open-backups"); if (ob) ob.onclick = () => window.chatbox.openBackups && window.chatbox.openBackups(); }
 setupMarked();
 // Track the floating composer's height so messages stay padded above it and the
-// scroll-to-bottom button floats just over it.
+// scroll-to-bottom button floats just over it. The visible half-height also keeps
+// the node minimap centred between the header edge and the input card's top edge.
+function syncComposerMetrics() {
+  const c = document.getElementById("composer");
+  if (!c) return;
+  const root = document.documentElement;
+  const h = c.offsetHeight;
+  const fade = parseFloat(getComputedStyle(root).getPropertyValue("--edge-fade-depth")) || 56;
+  root.style.setProperty("--composer-h", h + "px");
+  root.style.setProperty("--composer-visible-half", Math.max(0, (h - fade) / 2) + "px");
+}
 (function () {
   const c = document.getElementById("composer");
   if (!c) return;
-  const setH = () => document.documentElement.style.setProperty("--composer-h", c.offsetHeight + "px");
-  setH();
-  if (window.ResizeObserver) new ResizeObserver(setH).observe(c);
+  syncComposerMetrics();
+  if (window.ResizeObserver) new ResizeObserver(syncComposerMetrics).observe(c);
 })();
 // Pull the composer's top edge to resize the input box (Telegram/Slack-style). Drag sets an EXACT manual
 // height clamped to [1 line, ~40vh] and keeps it (even below 5 lines, with long text scrolling inside) —
@@ -4909,8 +5096,7 @@ setupMarked();
   // The composer grows UPWARD (it's anchored to the bottom), so sync --composer-h immediately and, when the
   // chat was scrolled to the bottom, re-pin it there — that lifts the last line up to stay above the composer.
   const reflow = () => {
-    const c = document.getElementById("composer");
-    if (c) document.documentElement.style.setProperty("--composer-h", c.offsetHeight + "px");
+    syncComposerMetrics();
     const box = document.getElementById("messages");
     if (pinBottom && box) box.scrollTop = box.scrollHeight;
   };
@@ -4954,7 +5140,8 @@ function applySeed(seed) {
   if (!seed || !state || state.settings._seeded) return;
   let touched = false;
   PROVIDER_ORDER.forEach(pk => {
-    if (seed.keys && seed.keys[pk]) { state.settings.providers[pk] = { key: String(seed.keys[pk]).trim() }; touched = true; }
+    if (seed.keys && seed.keys[pk]) { state.settings.providers[pk] = Object.assign({}, state.settings.providers[pk], { key: String(seed.keys[pk]).trim() }); touched = true; }
+    if (seed.baseUrls && seed.baseUrls[pk]) { state.settings.providers[pk] = Object.assign({}, state.settings.providers[pk], { baseUrl: String(seed.baseUrls[pk]).trim().replace(/\/+$/, "") }); touched = true; }
   });
   const ensureModel = (m) => { if (m && m.provider && m.model && !state.settings.models.some(x => modelsEqual(x, m))) state.settings.models.unshift({ provider: m.provider, model: m.model }); };
   if (seed.chat && seed.chat.provider && seed.chat.model) { state.settings.defaults.chat = { provider: seed.chat.provider, model: seed.chat.model }; ensureModel(seed.chat); touched = true; }

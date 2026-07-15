@@ -96,7 +96,9 @@ function createWindow(startHidden) {
   };
   if (isMac) {
     opts.titleBarStyle = "hiddenInset";              // hide bar, keep inset traffic lights
-    opts.trafficLightPosition = { x: 18, y: 18 };
+    // A 14px traffic light at (14, 14) has its centre at (21, 21), matching the
+    // sidebar's 6px inset + 15px corner radius.
+    opts.trafficLightPosition = { x: 14, y: 14 };
   } else {
     // Windows/Linux: no OS title bar; draw native min/max/close as an overlay over our header
     opts.titleBarStyle = "hidden";
@@ -350,7 +352,10 @@ function seedConfig() {
   const map = { OPENROUTER_API_KEY: "openrouter", OPENAI_API_KEY: "openai", ANTHROPIC_API_KEY: "anthropic", DEEPSEEK_API_KEY: "deepseek", GOOGLE_API_KEY: "google" };
   const keys = {};
   for (const k in map) if (e[k]) keys[map[k]] = e[k];
-  return { keys, chat: parseModelRef(e.DEFAULT_MODEL), title: parseModelRef(e.DEFAULT_TITLE_MODEL) };
+  const baseUrls = {};
+  if (e.OPENAI_BASE_URL) baseUrls.openai = e.OPENAI_BASE_URL;
+  if (e.ANTHROPIC_BASE_URL) baseUrls.anthropic = e.ANTHROPIC_BASE_URL;
+  return { keys, baseUrls, chat: parseModelRef(e.DEFAULT_MODEL), title: parseModelRef(e.DEFAULT_TITLE_MODEL) };
 }
 ipcMain.handle("seed-config", () => seedConfig());
 ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome }));
