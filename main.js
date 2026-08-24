@@ -29,6 +29,7 @@ let mainWindow = null;
 let quickWindow = null;
 let tray = null;
 let isQuitting = false;       // set on a real quit so close-to-tray doesn't swallow it
+let pendingMainShow = false;  // a second launch can arrive before app.whenReady() has created the window
 let loginEnabled = false;     // cached "open at login" state; drives background (close-to-tray) mode
 let trayHintShown = false;    // show the "still running in the tray" balloon only once per session
 // Config (provider keys, default model, theme, system prompt, shortcut, …) pushed up from
@@ -76,7 +77,7 @@ function saveWinState() {
   } catch (e) {}
 }
 
-function createWindow(startHidden) {
+function createWindow(startHidden = false) {
   const isMac = process.platform === "darwin";
   const saved = loadWinState();
   const opts = {
@@ -148,11 +149,18 @@ function createWindow(startHidden) {
 
 // Bring the main Quartz window to the front (recreating it if it was closed).
 function showMain() {
-  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  // A second-instance event can race app.whenReady() during a cold launch. Defer the
+  // request instead of trying to construct a BrowserWindow before Electron is ready.
+  if (!app.isReady()) { pendingMainShow = true; return; }
+  pendingMainShow = false;
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow(true);
   if (mainWindow.isMinimized()) mainWindow.restore();
+  // Activate the application before ordering the window front. Doing this in the
+  // opposite order can leave a visible, non-key window (grey traffic lights) on macOS.
+  if (process.platform === "darwin") { try { app.focus({ steal: true }); } catch (e) {} }
   mainWindow.show();
   mainWindow.focus();
-  if (process.platform === "darwin") { try { app.focus({ steal: true }); } catch (e) {} }
+  try { mainWindow.webContents.focus(); } catch (e) {}
 }
 
 // Global "open & focus" — bring up Quartz and put the cursor in the composer.
@@ -202,15 +210,6 @@ function hintTrayOnce() {
   }
 }
 
-// Creating/showing the 'panel'-type quick bar demotes the app to an accessory (UIElement) on macOS,
-// which strips the Dock running-dot and menu-bar ownership. Re-assert a normal foreground app after
-// every quick-window create/show so it never gets stuck as an accessory.
-function ensureForeground() {
-  if (process.platform === "darwin" && app.setActivationPolicy) {
-    try { app.setActivationPolicy("regular"); } catch (e) {}
-  }
-}
-
 /* ===================== Quick-ask bar (Option+Space) ===================== */
 function createQuickWindow() {
   quickWindow = new BrowserWindow({
@@ -239,9 +238,11 @@ function createQuickWindow() {
 
   quickWindow.loadFile(path.join(__dirname, "quickbar.html"));
   quickWindow.setAlwaysOnTop(true, "screen-saver");
-  if (process.platform === "darwin") {
-    quickWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  }
+  // Do not call setVisibleOnAllWorkspaces({ visibleOnFullScreen: true }) here.
+  // Electron's macOS `panel` already adds CanJoinAllSpaces + FullScreenAuxiliary;
+  // that extra API call temporarily hides the Dock and transforms the whole process
+  // into a UIElement, which detached the running app from its pinned Dock tile and
+  // left the already-visible main window inactive.
 
   // Click outside / focus elsewhere dismisses the bar (Spotlight behaviour), unless the
   // user turned that off in settings.
@@ -254,7 +255,6 @@ function createQuickWindow() {
     return { action: "deny" };
   });
   quickWindow.on("closed", () => { quickWindow = null; });
-  ensureForeground();   // the panel just demoted us to an accessory — undo it
 }
 
 function showQuick() {
@@ -272,7 +272,6 @@ function showQuick() {
   quickWindow.show();
   quickWindow.focus();
   quickWindow.webContents.send("quick-focus", quickConfig);
-  ensureForeground();   // showing the panel can re-demote us — keep the Dock dot + menu bar
 }
 
 function hideQuick() {
@@ -362,9 +361,21 @@ ipcMain.handle("app-info", () => ({ name: app.getName(), version: app.getVersion
 // Read the bundled CHANGELOG.md (works inside the asar) so 设置→关于 can show the release history.
 ipcMain.handle("get-changelog", () => { try { return fs.readFileSync(path.join(__dirname, "CHANGELOG.md"), "utf8"); } catch (e) { return ""; } });
 // Launch at login — start hidden so 速答 is available in the background without the window popping up.
-ipcMain.handle("get-login-item", () => { try { loginEnabled = !!app.getLoginItemSettings().openAtLogin; return loginEnabled; } catch (e) { return false; } });
+// `args` is Windows-only. macOS 13+ ignores openAsHidden, so startup uses wasOpenedAtLogin below.
+const LOGIN_ARGS = ["--hidden"];
+function getLoginSettings() {
+  return process.platform === "win32" ? app.getLoginItemSettings({ args: LOGIN_ARGS }) : app.getLoginItemSettings();
+}
+ipcMain.handle("get-login-item", () => { try { loginEnabled = !!getLoginSettings().openAtLogin; return loginEnabled; } catch (e) { return false; } });
 ipcMain.handle("set-login-item", (_e, enabled) => {
-  try { app.setLoginItemSettings({ openAtLogin: !!enabled, openAsHidden: !!enabled, args: ["--hidden"] }); loginEnabled = !!enabled; return true; } catch (e) { return false; }
+  try {
+    const settings = process.platform === "win32"
+      ? { openAtLogin: !!enabled, args: LOGIN_ARGS }
+      : { openAtLogin: !!enabled, openAsHidden: !!enabled };
+    app.setLoginItemSettings(settings);
+    loginEnabled = !!enabled;
+    return true;
+  } catch (e) { return false; }
 });
 
 // One-time: decrypt API keys that a brief earlier build stored via the OS keychain, so the renderer
@@ -551,8 +562,9 @@ async function downloadMacUpdate(info) {
   }
 }
 
-// Detached shell helper: wait for us to quit, unzip the new build, swap it in (keeping a
-// rollback copy), strip quarantine so Gatekeeper won't block the ad-hoc app, relaunch.
+// Detached shell helper: wait for us to quit, unzip the new build, swap its Contents in
+// place (keeping the outer Quartz.app directory/inode stable for Dock bookmarks), strip
+// quarantine so Gatekeeper won't block the ad-hoc app, then relaunch.
 const MAC_SWAP_SCRIPT = `#!/bin/sh
 ZIP="$1"; APP="$2"; DIR="$(dirname "$ZIP")/_x"
 i=0; while /usr/bin/pgrep -f "$APP/Contents/MacOS/" >/dev/null 2>&1 && [ $i -lt 80 ]; do sleep 0.25; i=$((i+1)); done
@@ -562,9 +574,17 @@ NEW="$DIR/$(basename "$APP")"
 [ -d "$NEW" ] || NEW="$(/usr/bin/find "$DIR" -maxdepth 1 -name '*.app' | head -1)"
 [ -d "$NEW" ] || { open "$APP"; exit 1; }
 /usr/bin/xattr -dr com.apple.quarantine "$NEW" 2>/dev/null
-rm -rf "$APP.bak"
-mv "$APP" "$APP.bak" || { open "$APP"; exit 1; }
-if mv "$NEW" "$APP"; then rm -rf "$APP.bak"; else mv "$APP.bak" "$APP"; open "$APP"; exit 1; fi
+OLD="$APP/Contents.quartz-bak"
+rm -rf "$OLD"
+mv "$APP/Contents" "$OLD" || { open "$APP"; exit 1; }
+if mv "$NEW/Contents" "$APP/Contents"; then
+  rm -rf "$OLD" "$NEW"
+else
+  rm -rf "$APP/Contents"
+  mv "$OLD" "$APP/Contents"
+  open "$APP"
+  exit 1
+fi
 /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null
 rm -rf "$DIR"
 open "$APP"
@@ -760,20 +780,28 @@ function buildMenu() {
 // (It also stops two processes from writing the same data dir.)
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) app.quit();
-else app.on("second-instance", () => showMain());
+else app.on("second-instance", () => {
+  if (app.isReady()) showMain();
+  else pendingMainShow = true;
+});
 
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return;   // a duplicate launch — we're already quitting
   buildMenu();
   // Launched at login? Start with the main window hidden — the renderer still loads and the global
   // QuickBar shortcut registers (below), so 速答 works in the background before the window is opened.
-  const li = app.getLoginItemSettings();
+  const li = getLoginSettings();
   loginEnabled = !!li.openAtLogin;
   const startHidden = process.argv.includes("--hidden") || li.wasOpenedAsHidden || li.wasOpenedAtLogin;
+  // Construct the non-activating panel first and the normal app window last. This
+  // guarantees that a user-initiated launch ends with the main window as the key window.
+  createQuickWindow();   // created hidden; first Option+Space is then instant
   createWindow(startHidden);
   createTray();          // Windows/Linux tray; the way back to the window after a hidden launch
-  createQuickWindow();   // created hidden; first Option+Space is then instant
-  ensureForeground();    // (createQuickWindow already re-asserts this; explicit at startup too)
+
+  // BrowserWindow(show:true) normally activates itself, but explicitly complete the
+  // activation after all startup windows exist. Never steal focus for a login launch.
+  if (!startHidden || pendingMainShow) showMain();
 
   // Register the default shortcuts now; the app reconciles them with the persisted settings
   // as soon as it boots and pushes its config up.

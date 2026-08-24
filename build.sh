@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# One-click packager for ChatBox.
+# One-click local packager for Quartz.
 #
 #   ./build.sh                 → macOS dmg + zip (universal: Intel + Apple Silicon)
 #   ./build.sh mac             → same
 #   ./build.sh win             → Windows portable zip (x64) — no Wine needed
 #   ./build.sh all             → both of the above
-#   ./build.sh mac --publish   → build AND upload to a GitHub release draft (needs GH_TOKEN)
+#   ./build.sh mac --publish   → build AND upload to the configured GitHub release (needs GH_TOKEN)
 #
 # Notes:
 #   • No Apple cert here → the app is ad-hoc signed. macOS auto-UPDATE can't self-install
@@ -16,8 +16,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-export CSC_IDENTITY_AUTO_DISCOVERY=false                                  # ad-hoc sign (no cert)
-export ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/" # fast/proxy-friendly mirror
+# Default to the existing ad-hoc build, but allow a release machine to opt into its
+# installed Developer ID identity with CSC_IDENTITY_AUTO_DISCOVERY=true.
+export CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-false}"
+# Do not force ELECTRON_MIRROR here. Current @electron/get also applies it to
+# electron-builder helper artifacts (such as dmg-builder), which makes DMG builds
+# request invalid mirror URLs. Callers may still provide their own download/cache setup.
 
 TARGET="mac"; PUBLISH=""
 for a in "$@"; do

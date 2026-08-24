@@ -1,62 +1,123 @@
 # 构建与发布 Quartz
 
-维护者笔记。日常使用见 [README.md](README.md)。
+维护者说明。公开发布的唯一正式入口是 [`.github/workflows/release.yml`](.github/workflows/release.yml)：推送 `v*` 标签后，GitHub Actions 自动构建 macOS Universal 与 Windows NSIS 安装包，并由 electron-builder 创建 GitHub Release。
 
-## 准备
+## 发布产物
 
-- **Node.js 18+**
-- macOS（Apple Silicon）用于打 mac 版（`arm64`）。
-- 仓库自带 `vendor/` 里的前端库，所以应用运行期没有网络依赖；`electron-updater` 是唯一打进包的 npm 依赖。
+每个正式版本必须包含：
 
-## 一键打包
+- `Quartz-<ver>-universal.dmg`
+- `Quartz-<ver>-universal-mac.zip`
+- `Quartz-Setup-<ver>.exe`
+- `latest-mac.yml`、`latest.yml`
+- 上述安装包对应的 `.blockmap`
+
+`latest-mac.yml` 和 `latest.yml` 是自动更新入口，不能遗漏。工作流使用 Node.js 20，两个平台串行发布，避免同时创建同一个 Release 导致 `422 already_exists`。
+
+## 发布一个版本
+
+以下以 `0.1.41` 为例。
+
+### 1. 准备版本内容
+
+确认当前分支为 `main`，并检查工作区只包含本版本计划发布的变更：
 
 ```bash
-./build.sh mac     # macOS arm64：dmg + zip + latest-mac.yml
-./build.sh win     # Windows x64：便携 zip
+git status --short
+git diff --check
+npm version 0.1.41 --no-git-tag-version
+```
+
+`npm version --no-git-tag-version` 会同时更新 `package.json` 和 `package-lock.json`，但不会创建提交或标签。随后在 `CHANGELOG.md` 最上方增加：
+
+```markdown
+## 0.1.41 — 2026-08-24
+```
+
+Release 页面正文会由 macOS Job 自动提取这个版本的 changelog 小节。
+
+### 2. 发布前验证
+
+```bash
+npm test
+node --check main.js
+bash -n build.sh
+git diff --check
+```
+
+如果修改涉及应用生命周期、自动更新、打包或签名，还应先完成对应平台的真实打包验证。macOS 本地验证可运行：
+
+```bash
+./build.sh mac
+codesign --verify --deep --strict dist/mac-universal/Quartz.app
+```
+
+### 3. 提交并推送 main
+
+先审查完整 diff，只暂存本次确认过的文件：
+
+```bash
+git diff
+git add <本版本已审核的文件>
+git diff --cached --check
+git commit -m "Release 0.1.41"
+git push origin main
+```
+
+### 4. 创建并推送标签
+
+标签必须是 annotated tag，版本必须与 `package.json` 完全一致，而且必须指向刚推到 `main` 的 release commit：
+
+```bash
+git tag -a v0.1.41 -m "Quartz 0.1.41"
+git push origin v0.1.41
+```
+
+正常发布不要同时运行 `gh release create`、`./build.sh --publish` 或其他上传命令。标签推送会触发 Actions，electron-builder 会自动创建 Release 并上传全部产物。
+
+### 5. 核对线上发布
+
+等待 `Release` workflow 的 macOS 和 Windows Job 都成功，然后检查：
+
+- Release 不是 draft 或 prerelease。
+- Release notes 与 `CHANGELOG.md` 的当前版本内容一致。
+- 所有 DMG、ZIP、EXE、YML、blockmap 均已上传。
+- `latest-mac.yml` 和 `latest.yml` 中的 `version`、文件名、大小和 SHA-512 与资产一致。
+
+可使用 GitHub Actions / Releases 网页，也可以在 GitHub CLI 登录有效时运行：
+
+```bash
+gh run list --workflow Release --limit 5
+gh run watch <run-id> --exit-status
+gh release view v0.1.41
+```
+
+## 公开构建与密钥
+
+公开 Release **绝不能包含 API Key**。`.env` 已被 Git 忽略；Actions 会创建一个空 `.env`，只用于满足 electron-builder 的 `files` 列表。给个人使用的带 Key 构建不得上传到公开 Release。
+
+## 本地打包
+
+`build.sh` 用于本地验证或私下构建，不是正式发布的默认入口：
+
+```bash
+./build.sh mac     # macOS Universal：dmg + zip
+./build.sh win     # Windows x64 便携 zip；不是 NSIS，不支持自动更新
 ./build.sh all
-./build.sh mac --publish   # 打包并上传到 GitHub Release（需要 GH_TOKEN）
 ```
 
-`build.sh` 会自动设两个环境变量：
+脚本默认设置：
 
-- `CSC_IDENTITY_AUTO_DISCOVERY=false` —— ad-hoc 签名（没有 Apple 开发者证书）。
-- `ELECTRON_MIRROR=https://registry.npmmirror.com/-/binary/electron/` —— 国内/代理友好的 Electron 下载镜像。
+- `CSC_IDENTITY_AUTO_DISCOVERY=false`：使用 ad-hoc 签名。
+- 不强制设置 `ELECTRON_MIRROR`：当前 electron-builder 还会把该变量错误应用到 `dmg-builder` 等辅助产物，可能导致 DMG 构建请求不存在的镜像地址。需要代理时应配置网络或预热缓存，不要在正式 DMG 构建中全局覆盖该变量。
 
-## 平台坑
+如果发布机器已经安装 Developer ID Application 证书，可用 `CSC_IDENTITY_AUTO_DISCOVERY=true ./build.sh mac` 启用证书发现。正式切换签名还需要 notarization，并应在后续版本持续使用同一身份，不能在无人确认时更改。
 
-### 在 Mac 上打 Windows
-electron-builder 会用它自带的 **x86 Wine** 跑 `rcedit` 给 exe 写图标/版本号。Apple Silicon 上
-**没装 Rosetta 2** 时这一步会失败（`bad CPU type`），但应用本体已经打好了 —— `build.sh` 于是
-自己把 `win-unpacked/` 压成 zip，得到一个能跑的便携版（默认图标、无版本信息）。
+Apple Silicon Mac 本地构建 Windows 包时，electron-builder 可能因为缺少 Rosetta 2 而无法运行 x86 Wine/rcedit。`build.sh` 会退回到便携 ZIP；正式 Windows Release 始终由 `windows-latest` Actions Runner 构建 NSIS 安装包。
 
-- 想要干净的 Windows 包（带图标+版本），装一次 Rosetta：`softwareupdate --install-rosetta --agree-to-license`。
-- 想要原生 **`.exe` 安装包（NSIS）且自动更新可用**，请在 Windows 电脑上构建 —— 见 [BUILD-WINDOWS.md](BUILD-WINDOWS.md)。便携 zip **不支持**自动更新。
+## 失败恢复
 
-### 代码签名 & 自动更新
-都是 **ad-hoc 签名**（无证书），所以：
-
-- **macOS** 无法**自行安装**更新（Squirrel.Mac 要求 Developer ID 签名）。Quartz 仍会检查更新源、
-  在左下角弹「有新版本 · 前往下载」打开 Release 页。要真正一键自更新需 $99/年的 Apple 开发者证书。
-- **Windows** 自动更新**只**在 NSIS 安装包（在 PC 上打）下可用，便携 zip 不行。
-
-## 发一个版本
-
-1. 升 `package.json` 里的 `version`（如 `0.2.0`）。electron-updater 靠版本号比较，必须递增。
-2. 打包：`./build.sh all`。
-3. 建一个 tag 为 `v<版本>` 的 GitHub Release，把**全部**这些传上去：
-   `Quartz-<ver>-arm64.dmg`、`Quartz-<ver>-arm64-mac.zip`、`latest-mac.yml`、`Quartz-<ver>-win-x64.zip`
-   （`.yml` 是自动更新检查的关键 —— 别漏）。
-
-用 GitHub CLI 最省事：
-
-```bash
-gh release create v0.2.0 --title "Quartz 0.2.0" --notes "..." \
-  dist/Quartz-0.2.0-arm64.dmg dist/Quartz-0.2.0-arm64-mac.zip \
-  dist/Quartz-0.2.0-win-x64.zip dist/latest-mac.yml
-```
-
-或让 electron-builder 直接发布：`GH_TOKEN=<token> ./build.sh mac --publish`
-（用 `package.json` 里的 `build.publish` 配置；`releaseType: "release"` 表示直接发布而非草稿），
-再把 Windows zip 附到那个 Release 上。
-
-> 公开 Release **绝不能**含 API Key —— 用空的 `.env` 来打公开版。给朋友的带 Key 版本是私下发的，永不公开。
+- 某个 Job 失败：先检查日志，再 rerun failed jobs 或重跑同一次 workflow。
+- Release 只有部分资产：优先重跑失败的矩阵 Job，不要手动创建第二个 Release。
+- 不要移动、覆盖或重新创建已公开标签，除非维护者明确决定采用该恢复方案。
+- `workflow_dispatch` 只用于恢复；日常发布始终使用推送 `v<version>` 标签。
