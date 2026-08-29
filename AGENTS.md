@@ -57,3 +57,9 @@ Public builds must never contain API keys. `.env` stays ignored, and the Actions
 The current public workflow intentionally disables certificate auto-discovery and produces ad-hoc-signed macOS builds. Do not silently change the signing identity. Moving to Developer ID signing/notarization requires explicit coordination and the same identity must be used consistently across releases.
 
 If a release job fails, inspect it and rerun the failed job or workflow. Do not move, overwrite, or recreate a published tag unless the maintainer explicitly chooses that recovery path. `workflow_dispatch` is a recovery mechanism, not the normal release path.
+
+
+## 通用开发规则
+
+执行本仓库任务前，必须完整阅读并遵循仓库根目录的 `RULES.md`。
+若其与更高优先级指令或用户在当前任务中的明确要求冲突，以后者为准。

@@ -37,8 +37,8 @@ Quartz 是一个以键盘为先、黑白极简的桌面 LLM 客户端，支持
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| **macOS**（Apple Silicon） | `Quartz-<版本>-arm64.dmg` | 打开 dmg，把 **Quartz** 拖进「应用程序」。 |
-| **Windows**（x64） | `Quartz-<版本>-win-x64.zip` | 解压后运行 `Quartz.exe`（便携版，无需安装）。 |
+| **macOS**（Intel / Apple Silicon） | `Quartz-<版本>-universal.dmg` | 打开 dmg，把 **Quartz** 拖进「应用程序」。 |
+| **Windows**（x64） | `Quartz-Setup-<版本>.exe` | 运行安装程序；安装后支持应用内更新。 |
 
 应用**未做商业代码签名**，所以首次打开时：
 - **macOS** —— 若提示「无法验证开发者」，右键图标 →「**打开**」一次即可。
@@ -63,7 +63,7 @@ Quartz 是一个以键盘为先、黑白极简的桌面 LLM 客户端，支持
 | 快捷键 | 功能 |
 |---|---|
 | `⌥Space` | 速答浮条（全局） |
-| `⌥⌘Space` | 唤起并聚焦 Quartz（全局） |
+| `⌘⇧L`（macOS）/ `Alt+Shift+L`（Windows/Linux） | 唤起并聚焦 Quartz（全局） |
 | `⌘N` | 新对话 |
 | `⌘B` | 收起 / 展开侧栏 |
 | `⌘1` – `⌘9` | 切换侧栏顶部第 1 – 9 个对话 |
@@ -78,16 +78,16 @@ Quartz 是一个以键盘为先、黑白极简的桌面 LLM 客户端，支持
 
 ## 从源码构建
 
-需要 **Node.js 18+**。
+需要 **Node.js 20+**。
 
 ```bash
 git clone https://github.com/Skywalker144/Quartz.git
 cd Quartz
-npm install
+npm ci
 npm start          # 开发运行
 ```
 
-打包（macOS arm64 的 dmg+zip、Windows x64 便携 zip）：
+本地打包（macOS Universal dmg+zip、Windows x64 便携 zip）：
 
 ```bash
 ./build.sh mac     # 或：win | all
@@ -95,6 +95,7 @@ npm start          # 开发运行
 
 构建/发布的细节（镜像、Rosetta、签名、发版）见 [RELEASE.md](RELEASE.md)。
 要出 Windows 原生安装包（`.exe`，且支持自动更新），需在 Windows 电脑上构建 —— 见 [BUILD-WINDOWS.md](BUILD-WINDOWS.md)。
+项目文档入口见 [docs/README.md](docs/README.md)。
 
 ---
 

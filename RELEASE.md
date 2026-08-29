@@ -16,7 +16,7 @@
 
 ## 发布一个版本
 
-以下以 `0.1.41` 为例。
+以下命令中的 `<version>` 表示 `package.json` 中准备发布的版本号。
 
 ### 1. 准备版本内容
 
@@ -25,13 +25,13 @@
 ```bash
 git status --short
 git diff --check
-npm version 0.1.41 --no-git-tag-version
+npm version <version> --no-git-tag-version
 ```
 
 `npm version --no-git-tag-version` 会同时更新 `package.json` 和 `package-lock.json`，但不会创建提交或标签。随后在 `CHANGELOG.md` 最上方增加：
 
 ```markdown
-## 0.1.41 — 2026-08-24
+## <version> — YYYY-MM-DD
 ```
 
 Release 页面正文会由 macOS Job 自动提取这个版本的 changelog 小节。
@@ -60,7 +60,7 @@ codesign --verify --deep --strict dist/mac-universal/Quartz.app
 git diff
 git add <本版本已审核的文件>
 git diff --cached --check
-git commit -m "Release 0.1.41"
+git commit -m "Release <version>"
 git push origin main
 ```
 
@@ -69,11 +69,11 @@ git push origin main
 标签必须是 annotated tag，版本必须与 `package.json` 完全一致，而且必须指向刚推到 `main` 的 release commit：
 
 ```bash
-git tag -a v0.1.41 -m "Quartz 0.1.41"
-git push origin v0.1.41
+git tag -a v<version> -m "Quartz <version>"
+git push origin v<version>
 ```
 
-正常发布不要同时运行 `gh release create`、`./build.sh --publish` 或其他上传命令。标签推送会触发 Actions，electron-builder 会自动创建 Release 并上传全部产物。
+正常发布不要同时运行 `gh release create`、`electron-builder --publish` 或其他上传命令。标签推送会触发 Actions，electron-builder 会自动创建 Release 并上传全部产物。
 
 ### 5. 核对线上发布
 
@@ -89,7 +89,7 @@ git push origin v0.1.41
 ```bash
 gh run list --workflow Release --limit 5
 gh run watch <run-id> --exit-status
-gh release view v0.1.41
+gh release view v<version>
 ```
 
 ## 公开构建与密钥
