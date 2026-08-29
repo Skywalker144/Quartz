@@ -5,14 +5,9 @@
  * The streaming below mirrors app.js's streamChat for the default provider (text-only). */
 
 const api = window.chatbox || {};
-
-const PROVIDERS = {
-  openrouter: { kind: "openai", base: "https://openrouter.ai/api/v1" },
-  openai:     { kind: "openai", base: "https://api.openai.com/v1" },
-  anthropic:  { kind: "anthropic", base: "https://api.anthropic.com/v1" },
-  deepseek:   { kind: "openai", base: "https://api.deepseek.com/v1" },
-  google:     { kind: "openai", base: "https://generativelanguage.googleapis.com/v1beta/openai" },
-};
+const MARKDOWN = QuartzMarkdown.createMarkdown({ root: window, core: QuartzCore });
+const renderMd = MARKDOWN.render;
+MARKDOWN.setup();
 
 /* ---------- DOM ---------- */
 const wrap = document.getElementById("wrap");
@@ -46,11 +41,6 @@ function applyConfig(c) {
 }
 
 function keyFor(provider) { const p = cfg && cfg.providers && cfg.providers[provider]; return (p && p.key) ? p.key.trim() : ""; }
-function baseFor(provider) {
-  const p = cfg && cfg.providers && cfg.providers[provider];
-  return ((p && p.baseUrl) || (PROVIDERS[provider] && PROVIDERS[provider].base) || "").trim().replace(/\/+$/, "");
-}
-function apiUrl(provider, path) { return baseFor(provider) + "/" + String(path || "").replace(/^\/+/, ""); }
 
 function applyTheme(theme) {
   const dark = theme === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : theme === "dark";
@@ -60,146 +50,24 @@ function applyTheme(theme) {
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (cfg && cfg.theme === "auto") applyTheme("auto"); });
 
-/* ---------- markdown + math (KaTeX), mirroring the main app ---------- */
-(function setupMd() {
-  if (!window.marked) return;
-  const renderMath = (tex, display) => {
-    if (!window.katex) return (display ? "$$" + tex + "$$" : "$" + tex + "$");
-    try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); }
-    catch (e) { return (display ? "$$" + tex + "$$" : "$" + tex + "$"); }
-  };
-  const blockMath = {
-    name: "blockMath", level: "block",
-    start(src) { const a = [src.indexOf("$$"), src.indexOf("\\[")].filter(x => x >= 0); return a.length ? Math.min.apply(null, a) : undefined; },
-    tokenizer(src) {
-      let m = /^\$\$([\s\S]+?)\$\$/.exec(src); if (m) return { type: "blockMath", raw: m[0], text: m[1].trim() };
-      m = /^\\\[([\s\S]+?)\\\]/.exec(src); if (m) return { type: "blockMath", raw: m[0], text: m[1].trim() };
-    },
-    renderer(t) { return '<div class="math-block">' + renderMath(t.text, true) + "</div>"; },
-  };
-  const inlineMath = {
-    name: "inlineMath", level: "inline",
-    start(src) { const a = [src.indexOf("$"), src.indexOf("\\(")].filter(x => x >= 0); return a.length ? Math.min.apply(null, a) : undefined; },
-    tokenizer(src) {
-      let m = /^\$\$([^\n]+?)\$\$/.exec(src); if (m) return { type: "inlineMath", raw: m[0], text: m[1].trim(), display: true };
-      m = /^\\\(([\s\S]+?)\\\)/.exec(src); if (m) return { type: "inlineMath", raw: m[0], text: m[1], display: false };
-      m = /^\$([^\n$]+?)\$/.exec(src);
-      if (m) {
-        const b = m[1];
-        if (/^\s|\s$/.test(b)) return;
-        if (/^\d+(\.\d+)?$/.test(b)) return;
-        if (/\d/.test(src.charAt(m[0].length))) return;
-        return { type: "inlineMath", raw: m[0], text: b, display: false };
-      }
-    },
-    renderer(t) { return renderMath(t.text, !!t.display); },
-  };
-  try { marked.use({ extensions: [blockMath, inlineMath] }); } catch (e) {}
-})();
-// CommonMark emphasis won't fire when a ** / * delimiter sits flush against CJK punctuation with a CJK
-// letter on the other side (Chinese uses no spaces), so "**加粗（注）**的" renders literally. Slip a
-// zero-width space between the delimiter and the punctuation to restore "flanking"; it is stripped back
-// out of the final HTML so copied text stays clean. Code spans/blocks are left untouched.
-const CJK_LETTER = "\\u3400-\\u4DBF\\u4E00-\\u9FFF\\u3040-\\u30FF\\uAC00-\\uD7AF\\uF900-\\uFAFF\\u3005\\u3007";
-const CJK_PUNCT = "()\\[\\]{}<>\"'`!?.,:;~|@#%^&=+/\\\\\\u2018\\u2019\\u201C\\u201D\\u2013\\u2014\\u2026\\u3000-\\u303F\\uFF00-\\uFFEF";
-const EM_OPEN_RE = new RegExp("([" + CJK_LETTER + "])([*_]+)([" + CJK_PUNCT + "])", "g");
-const EM_CLOSE_RE = new RegExp("([" + CJK_PUNCT + "])([*_]+)([" + CJK_LETTER + "])", "g");
-// LLMs sometimes emit "** 文字**" — a space hugging the inside of the ** stops CommonMark from forming
-// strong emphasis. Trim those inner spaces for a PAIRED ** run on one line (leaves "2 ** 3" / code alone).
-const LOOSE_STRONG_LEAD = /\*\*[ \t]+([^\s*](?:[^\n*]*?[^\s*])?)[ \t]*\*\*/g;
-const LOOSE_STRONG_TRAIL = /\*\*([^\s*](?:[^\n*]*?[^\s*])?)[ \t]+\*\*/g;
-function fixCjkEmphasis(src) {
-  if (!src || (src.indexOf("*") < 0 && src.indexOf("_") < 0)) return src;
-  return src.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g)
-    .map((seg, i) => {
-      if (i % 2) return seg;                       // inside a code span/block — leave verbatim
-      seg = seg.replace(LOOSE_STRONG_LEAD, "**$1**").replace(LOOSE_STRONG_TRAIL, "**$1**");
-      return seg.replace(EM_OPEN_RE, "$1$2​$3").replace(EM_CLOSE_RE, "$1​$2$3");
-    })
-    .join("");
-}
-function renderMd(t) {
-  let html;
-  if (window.marked) { try { html = marked.parse(fixCjkEmphasis(t), { breaks: true, gfm: true }); } catch (e) {} }
-  if (html == null) { const d = document.createElement("div"); d.textContent = t; html = "<p>" + d.innerHTML.replace(/\n/g, "<br>") + "</p>"; }
-  html = html.replace(/​/g, "");   // drop the helper zero-width spaces
-  if (window.DOMPurify) return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, ADD_ATTR: ["target"], FORBID_TAGS: ["style", "form"] });
-  return html;
-}
-
-/* ---------- streaming (mirrors app.js streamChat, text-only) ---------- */
-async function errText(resp) {
-  let em = "请求失败：HTTP " + resp.status;
-  try { const j = await resp.json(); em = (j.error && j.error.message) || j.message || em; } catch (e) {}
-  return em;
-}
-async function pumpSSE(resp, onData) {
-  const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
-  while (true) {
-    const { done, value } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n"); buf = lines.pop();
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith("data:")) continue;
-      const data = t.slice(5).trim();
-      if (data === "[DONE]") continue;
-      let json; try { json = JSON.parse(data); } catch (e) { continue; }
-      onData(json);
-    }
-  }
-}
 async function streamAsk(userText, signal, onDelta) {
   const ref = cfg.chat;
-  const prov = PROVIDERS[ref.provider];
   const key = keyFor(ref.provider);
-  if (!prov) throw new Error("未知的提供方：" + ref.provider);
   if (!key) { const e = new Error("NO_KEY"); e.code = "NO_KEY"; throw e; }
-  const sys = cfg.system || "";
-  const temp = (cfg.temp != null && cfg.temp !== "") ? Number(cfg.temp) : undefined;
-  const topP = (cfg.topP != null && cfg.topP !== "") ? Number(cfg.topP) : undefined;
-  const topK = (cfg.topK != null && cfg.topK !== "") ? Number(cfg.topK) : undefined;
-  let acc = "", usage = null;
-
-  if (prov.kind === "openai") {
-    const msgs = [];
-    if (sys) msgs.push({ role: "system", content: sys });
-    msgs.push({ role: "user", content: userText });
-    const body = { model: ref.model, messages: msgs, stream: true };
-    if (temp != null) body.temperature = temp;
-    if (topP != null) body.top_p = topP;
-    if (topK != null && ref.provider === "openrouter") body.top_k = topK;
-    const headers = { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
-    if (ref.provider === "openrouter") { headers["HTTP-Referer"] = "https://quartz.local"; headers["X-Title"] = "Quartz"; body.usage = { include: true }; }
-    else if ((ref.provider === "openai" && !(cfg.providers.openai && cfg.providers.openai.baseUrl)) || ref.provider === "deepseek") body.stream_options = { include_usage: true };
-    // DeepSeek V4 混合模型（pro/flash）默认开启思考——QuickBar 是快速问答，显式关掉思考让回答秒出。
-    if (ref.provider === "deepseek") body.thinking = { type: "disabled" };
-    const resp = await fetch(apiUrl(ref.provider, "chat/completions"), { method: "POST", headers, body: JSON.stringify(body), signal });
-    if (!resp.ok) throw new Error(await errText(resp));
-    await pumpSSE(resp, (j) => {
-      const d = j.choices && j.choices[0] && j.choices[0].delta;
-      if (d && d.content) { acc += d.content; onDelta(acc); }
-      if (j.usage) usage = { prompt_tokens: j.usage.prompt_tokens, completion_tokens: j.usage.completion_tokens, cost: j.usage.cost };
-    });
-  } else if (prov.kind === "anthropic") {
-    const body = { model: ref.model, max_tokens: 4096, stream: true, messages: [{ role: "user", content: userText }] };
-    if (sys) body.system = sys;
-    if (temp != null) body.temperature = temp;
-    if (topP != null) body.top_p = topP;
-    if (topK != null) body.top_k = topK;
-    const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
-    const resp = await fetch(apiUrl(ref.provider, "messages"), { method: "POST", headers, body: JSON.stringify(body), signal });
-    if (!resp.ok) throw new Error(await errText(resp));
-    let inTok = 0, outTok = 0;
-    await pumpSSE(resp, (j) => {
-      if (j.type === "content_block_delta" && j.delta && j.delta.type === "text_delta") { acc += j.delta.text; onDelta(acc); }
-      else if (j.type === "message_start" && j.message && j.message.usage) inTok = j.message.usage.input_tokens || 0;
-      else if (j.type === "message_delta" && j.usage && j.usage.output_tokens != null) outTok = j.usage.output_tokens;
-    });
-    usage = { prompt_tokens: inTok, completion_tokens: outTok };
-  } else throw new Error("不支持的提供方类型");
-
-  return { text: acc, usage };
+  const providerConfig = cfg.providers && cfg.providers[ref.provider];
+  return QuartzCore.streamCompletion({
+    ref,
+    key,
+    baseUrl: providerConfig && providerConfig.baseUrl,
+    system: cfg.system || "",
+    messages: [{ role: "user", content: userText, attachments: [] }],
+    temperature: cfg.temp != null && cfg.temp !== "" ? Number(cfg.temp) : undefined,
+    topP: cfg.topP != null && cfg.topP !== "" ? Number(cfg.topP) : undefined,
+    topK: cfg.topK != null && cfg.topK !== "" ? Number(cfg.topK) : undefined,
+    reasoning: ref.provider === "deepseek" ? false : undefined,
+    signal,
+    onDelta,
+  });
 }
 
 /* ---------- window height: grow/shrink the panel to fit content ---------- */

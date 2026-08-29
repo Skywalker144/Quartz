@@ -20,6 +20,8 @@ mkdir -p "$OUT"
 
 # --- shared core: the very same files the Electron renderer uses ---
 cp app.js styles.css CHANGELOG.md "$OUT"/
+cp -R shared "$OUT"/shared
+cp -R renderer "$OUT"/renderer
 cp -R vendor "$OUT"/vendor
 cp -R assets "$OUT"/assets
 

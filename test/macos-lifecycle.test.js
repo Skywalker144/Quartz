@@ -4,6 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const mainSource = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+const updateSource = fs.readFileSync(path.join(__dirname, "..", "main", "auto-update.js"), "utf8");
 
 test("QuickBar never transforms the macOS application process type", () => {
   assert.doesNotMatch(mainSource, /^\s*quickWindow\.setVisibleOnAllWorkspaces\s*\(/m);
@@ -22,7 +23,7 @@ test("the non-activating panel is constructed before the visible main window", (
 });
 
 test("the macOS updater preserves the outer app bundle for Dock bookmarks", () => {
-  const match = mainSource.match(/const MAC_SWAP_SCRIPT = `([\s\S]*?)`;/);
+  const match = updateSource.match(/const MAC_SWAP_SCRIPT = `([\s\S]*?)`;/);
   assert.ok(match, "MAC_SWAP_SCRIPT must exist");
   const script = match[1];
 

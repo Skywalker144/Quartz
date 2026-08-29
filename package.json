@@ -41,7 +41,10 @@
       "quickbar.js",
       "preload.js",
       "main.js",
+      "main/**/*",
       ".env",
+      "shared/**/*",
+      "renderer/**/*",
       "vendor/**/*",
       "assets/**/*",
       "CHANGELOG.md",
@@ -62,6 +65,7 @@
       ]
     },
     "nsis": {
+      "artifactName": "Quartz-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": true,
       "allowToChangeInstallationDirectory": true,

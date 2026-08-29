@@ -1,9 +1,11 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage, shell, globalShortcut, ipcMain, screen, dialog, safeStorage, session, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 let autoUpdater = null;
 try { autoUpdater = require("electron-updater").autoUpdater; } catch (e) { /* dep missing in some dev setups */ }
+const { registerDataTransfer } = require("./main/data-transfer");
+const { registerConversationExport } = require("./main/conversation-export");
+const { createAutoUpdate } = require("./main/auto-update");
 
 // Storage folder = "Quartz". Early builds used "ChatBox" (the old product name); migrate that folder over once
 // via an atomic same-volume rename. On any failure, fall back to the legacy folder so data is never lost.
@@ -386,64 +388,16 @@ ipcMain.handle("decrypt-secret", (_e, b64) => {
   catch (e) { return null; }
 });
 
-// Full data backup: write the whole app-state blob (conversations + settings + keys) to a file the user picks.
-ipcMain.handle("data-export", async (_e, json) => {
-  try {
-    const stamp = new Date().toISOString().slice(0, 10);
-    const r = await dialog.showSaveDialog(mainWindow, {
-      title: "导出 Quartz 数据",
-      defaultPath: `Quartz-备份-${stamp}.json`,
-      filters: [{ name: "Quartz 备份", extensions: ["json"] }],
-    });
-    if (r.canceled || !r.filePath) return { canceled: true };
-    fs.writeFileSync(r.filePath, json, "utf8");
-    return { ok: true, path: r.filePath };
-  } catch (e) { return { ok: false, error: e.message }; }
-});
-// Restore from a backup file: read it and hand the raw JSON text back to the renderer to validate + apply.
-ipcMain.handle("data-import", async () => {
-  try {
-    const r = await dialog.showOpenDialog(mainWindow, {
-      title: "导入 Quartz 数据",
-      properties: ["openFile"],
-      filters: [{ name: "Quartz 备份", extensions: ["json"] }],
-    });
-    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { canceled: true };
-    return { ok: true, json: fs.readFileSync(r.filePaths[0], "utf8") };
-  } catch (e) { return { ok: false, error: e.message }; }
+registerDataTransfer({
+  ipcMain,
+  app,
+  dialog,
+  shell,
+  fs,
+  path,
+  getMainWindow: () => mainWindow,
 });
 
-// Silent rotating auto-backups for data safety (the renderer strips API keys before sending).
-function backupsDir() { return path.join(app.getPath("userData"), "backups"); }
-ipcMain.handle("backup-write", (_e, json) => {
-  try {
-    const dir = backupsDir(); fs.mkdirSync(dir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    fs.writeFileSync(path.join(dir, `quartz-auto-${stamp}.json`), json, "utf8");
-    const files = fs.readdirSync(dir).filter(f => /^quartz-auto-.*\.json$/.test(f)).sort();
-    while (files.length > 8) { try { fs.unlinkSync(path.join(dir, files.shift())); } catch (e) {} }
-    return { ok: true };
-  } catch (e) { return { ok: false, error: e.message }; }
-});
-ipcMain.handle("open-backups", () => {
-  try { const d = backupsDir(); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); return { ok: true }; }
-  catch (e) { return { ok: false, error: e.message }; }
-});
-// 自动备份的恢复入口：列出现有备份（新→旧）/ 读取指定一份（文件名白名单校验，杜绝路径穿越）。
-ipcMain.handle("backup-list", () => {
-  try {
-    const dir = backupsDir(); fs.mkdirSync(dir, { recursive: true });
-    return fs.readdirSync(dir).filter(f => /^quartz-auto-[\w.-]+\.json$/.test(f))
-      .map(f => { const st = fs.statSync(path.join(dir, f)); return { name: f, mtime: st.mtimeMs, size: st.size }; })
-      .sort((a, b) => b.mtime - a.mtime);
-  } catch (e) { return []; }
-});
-ipcMain.handle("backup-read", (_e, name) => {
-  try {
-    if (!/^quartz-auto-[\w.-]+\.json$/.test(name || "")) return { ok: false, error: "无效的备份文件名" };
-    return { ok: true, json: fs.readFileSync(path.join(backupsDir(), name), "utf8") };
-  } catch (e) { return { ok: false, error: e.message }; }
-});
 // Keep the Windows/Linux window-controls overlay colours in sync with the app theme.
 ipcMain.on("set-titlebar-overlay", (_e, o) => {
   if (process.platform === "darwin" || !mainWindow || mainWindow.isDestroyed() || !mainWindow.setTitleBarOverlay) return;
@@ -479,157 +433,16 @@ ipcMain.handle("test-proxy", () => new Promise((resolve) => {
   } catch (e) { finish({ ok: false, error: e.message }); }
 }));
 
-/* ===================== Auto-update (GitHub releases) ===================== */
-// Windows (NSIS): electron-updater downloads + self-installs via quitAndInstall.
-// macOS is ad-hoc signed, so Squirrel.Mac can't self-install. Instead we run our OWN
-// updater: electron-updater only CHECKS; on mac we download the zip ourselves (Chromium
-// net, proxy-aware), verify its sha512, then swap the .app bundle in place and relaunch.
-const GH_OWNER = "Skywalker144", GH_REPO = "Quartz";
-let lastUpdate = null;          // cached so the renderer can query on boot
-let pendingUpdate = null;       // { version, zipPath } once a mac update is downloaded & verified
-let macDownload = null;         // { ver, pct } while a mac self-download is in flight (guards against concurrent streams)
-let autoUpdateOn = true;        // when false, skip the launch + daily auto-checks (manual "检查更新" still works)
-function autoUpdatePath() { return path.join(app.getPath("userData"), "auto-update"); }
-function loadAutoUpdate() { try { autoUpdateOn = fs.readFileSync(autoUpdatePath(), "utf8").trim() !== "0"; } catch (e) { autoUpdateOn = true; } return autoUpdateOn; }
-function saveAutoUpdate(on) { autoUpdateOn = !!on; try { fs.writeFileSync(autoUpdatePath(), on ? "1" : "0"); } catch (e) {} }
-function uSend(payload) {
-  lastUpdate = payload;
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("update-status", payload);
-}
-function releasesUrl() { return `https://github.com/${GH_OWNER}/${GH_REPO}/releases/latest`; }
-function appBundlePath() { return path.resolve(path.dirname(process.execPath), "..", ".."); } // …/Quartz.app
-
-// Stream a URL to disk via Chromium's net stack (follows redirects, honours system proxy).
-function downloadTo(url, dest, onProgress) {
-  return new Promise((resolve, reject) => {
-    const { net } = require("electron");
-    const req = net.request(url);
-    req.on("response", (res) => {
-      if (res.statusCode !== 200) { reject(new Error("HTTP " + res.statusCode)); return; }
-      const lh = res.headers["content-length"];
-      const total = parseInt(Array.isArray(lh) ? lh[0] : (lh || 0), 10) || 0;
-      const file = fs.createWriteStream(dest);
-      let got = 0;
-      res.on("data", (c) => { got += c.length; file.write(c); if (total) onProgress(Math.min(99, Math.round(got / total * 100))); });
-      res.on("end", () => file.end(resolve));
-      res.on("error", reject);
-      file.on("error", reject);
-    });
-    req.on("error", reject);
-    req.end();
-  });
-}
-
-async function downloadMacUpdate(info) {
-  const ver = info && info.version;
-  // Already fetched & verified this version → just re-assert "ready", don't download again.
-  if (pendingUpdate && pendingUpdate.zipPath && pendingUpdate.version === ver) {
-    uSend({ state: "ready", version: ver });
-    return;
-  }
-  // A download is already running (e.g. the launch check started one, now a manual
-  // "check for updates" fired update-available again). Don't open a second stream onto
-  // the same file — re-assert the in-flight progress so the UI doesn't stall on "checking".
-  if (macDownload) {
-    uSend({ state: "downloading", version: macDownload.ver, percent: macDownload.pct });
-    return;
-  }
-  macDownload = { ver, pct: 0 };
-  // 选与本机架构匹配的 zip（别在 Intel 机上装了 arm64 包，反之亦然）；匹配不到再退回任意 -mac.zip。
-  const files = (info && info.files) || [];
-  const arch = process.arch === "x64" ? "x64" : "arm64";
-  const entry = files.find(f => new RegExp("-" + arch + "-mac\\.zip$").test(f.url))
-             || files.find(f => /-mac\.zip$/.test(f.url)) || {};
-  const name = entry.url || `Quartz-${ver}-${arch}-mac.zip`;
-  const url = `https://github.com/${GH_OWNER}/${GH_REPO}/releases/download/v${ver}/${name}`;
-  const dir = path.join(app.getPath("userData"), "updates");
-  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
-  const dest = path.join(dir, name);
-  uSend({ state: "downloading", version: ver, percent: 0 });
-  try {
-    await downloadTo(url, dest, (pct) => { if (macDownload) macDownload.pct = pct; uSend({ state: "downloading", version: ver, percent: pct }); });
-    // 校验强制化：缺 sha512 直接中止，绝不换上未校验的二进制——换包脚本会 xattr 抹掉隔离位、绕过 Gatekeeper，
-    // 一旦装了被替换的包就没有 OS 兜底了。正常 GitHub release 的 latest-mac.yml 一定带 sha512。
-    if (!entry.sha512) throw new Error("更新缺少校验信息（sha512），为安全起见已中止");
-    const got = require("crypto").createHash("sha512").update(fs.readFileSync(dest)).digest("base64");
-    if (got !== entry.sha512) throw new Error("下载校验失败");
-    pendingUpdate = { version: ver, zipPath: dest };
-    uSend({ state: "ready", version: ver });
-  } catch (e) {
-    uSend({ state: "error", version: ver, message: e.message });
-  } finally {
-    macDownload = null;
-  }
-}
-
-// Detached shell helper: wait for us to quit, unzip the new build, swap its Contents in
-// place (keeping the outer Quartz.app directory/inode stable for Dock bookmarks), strip
-// quarantine so Gatekeeper won't block the ad-hoc app, then relaunch.
-const MAC_SWAP_SCRIPT = `#!/bin/sh
-ZIP="$1"; APP="$2"; DIR="$(dirname "$ZIP")/_x"
-i=0; while /usr/bin/pgrep -f "$APP/Contents/MacOS/" >/dev/null 2>&1 && [ $i -lt 80 ]; do sleep 0.25; i=$((i+1)); done
-rm -rf "$DIR"; mkdir -p "$DIR"
-/usr/bin/ditto -x -k "$ZIP" "$DIR" || { open "$APP"; exit 1; }
-NEW="$DIR/$(basename "$APP")"
-[ -d "$NEW" ] || NEW="$(/usr/bin/find "$DIR" -maxdepth 1 -name '*.app' | head -1)"
-[ -d "$NEW" ] || { open "$APP"; exit 1; }
-/usr/bin/xattr -dr com.apple.quarantine "$NEW" 2>/dev/null
-OLD="$APP/Contents.quartz-bak"
-rm -rf "$OLD"
-mv "$APP/Contents" "$OLD" || { open "$APP"; exit 1; }
-if mv "$NEW/Contents" "$APP/Contents"; then
-  rm -rf "$OLD" "$NEW"
-else
-  rm -rf "$APP/Contents"
-  mv "$OLD" "$APP/Contents"
-  open "$APP"
-  exit 1
-fi
-/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null
-rm -rf "$DIR"
-open "$APP"
-`;
-function installMacUpdate() {
-  if (!pendingUpdate || !pendingUpdate.zipPath) { shell.openExternal(releasesUrl()); return; }
-  try {
-    const script = path.join(os.tmpdir(), "quartz-self-update.sh");
-    fs.writeFileSync(script, MAC_SWAP_SCRIPT, { mode: 0o755 });
-    require("child_process").spawn("/bin/sh", [script, pendingUpdate.zipPath, appBundlePath()], { detached: true, stdio: "ignore" }).unref();
-    setTimeout(() => app.quit(), 250);
-  } catch (e) { uSend({ state: "error", message: e.message }); }
-}
-
-function setupAutoUpdate() {
-  if (!autoUpdater || !app.isPackaged) return;   // no updates in dev
-  const isMac = process.platform === "darwin";
-  autoUpdater.autoDownload = !isMac;             // win: updater downloads NSIS; mac: we download ourselves
-  autoUpdater.autoInstallOnAppQuit = !isMac;
-  autoUpdater.on("update-available", (info) => {
-    const ver = info && info.version;
-    if (isMac) downloadMacUpdate(info);
-    else uSend({ state: "downloading", version: ver });
-  });
-  autoUpdater.on("update-not-available", (info) => uSend({ state: "none", version: info && info.version }));
-  autoUpdater.on("download-progress", (p) => { if (process.platform !== "darwin") uSend({ state: "downloading", percent: Math.round((p && p.percent) || 0) }); });
-  autoUpdater.on("update-downloaded", (info) => { pendingUpdate = { version: info && info.version }; uSend({ state: "ready", version: info && info.version }); });
-  autoUpdater.on("error", (e) => uSend({ state: "error", message: e && e.message }));
-  loadAutoUpdate();
-  if (autoUpdateOn) autoUpdater.checkForUpdates().catch(() => {});                  // on launch (unless the user turned auto-check off)
-  setInterval(() => { if (autoUpdateOn) autoUpdater.checkForUpdates().catch(() => {}); }, 24 * 60 * 60 * 1000);   // + once a day while running
-}
-ipcMain.handle("update-status-get", () => lastUpdate);
-ipcMain.handle("get-auto-update", () => loadAutoUpdate());
-ipcMain.on("set-auto-update", (_e, on) => saveAutoUpdate(on));
-ipcMain.handle("update-check", async () => {
-  if (!autoUpdater || !app.isPackaged) return { state: "dev" };
-  uSend({ state: "checking" });
-  try { await autoUpdater.checkForUpdates(); return { ok: true }; }
-  catch (e) { uSend({ state: "error", message: e && e.message }); return { ok: false, error: e && e.message }; }
-});
-ipcMain.on("update-action", (_e, action) => {
-  if (action === "page") { shell.openExternal(releasesUrl()); return; }
-  if (process.platform === "darwin") installMacUpdate();
-  else if (autoUpdater) { try { autoUpdater.quitAndInstall(); } catch (e) {} }
+const autoUpdate = createAutoUpdate({
+  app,
+  ipcMain,
+  fs,
+  path,
+  os: require("os"),
+  shell,
+  net,
+  autoUpdater,
+  getMainWindow: () => mainWindow,
 });
 
 // The main app renderer pushes its current config up; the quick bar pulls it on demand.
@@ -651,89 +464,15 @@ ipcMain.on("quick-handoff", (_e, payload) => {
   else wc.send("quick-open", payload);
 });
 
-/* ===================== Export current conversation (PDF / PNG / Markdown) ===================== */
-const EXPORT_CSS = `
-* { box-sizing: border-box; }
-body { margin: 0; background: #fff; color: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; line-height: 1.66; }
-/* fixed text column so PDF (A4) and PNG render an identical line length (~42 CJK chars @15px) */
-.ex-root { max-width: 700px; margin: 0 auto; padding: 40px 30px 48px; }
-.ex-title { font-size: 22px; font-weight: 700; margin: 0 0 26px; }
-.ex-turn { margin: 0 0 22px; }
-.ex-who { font-size: 11px; font-weight: 700; color: #999; margin-bottom: 6px; letter-spacing: .06em; }
-.ex-user .ex-bubble { background: #f1f1f3; border-radius: 12px; padding: 12px 16px; }
-.ex-assistant .ex-bubble { padding: 0 2px; }
-.ex-bubble > :first-child { margin-top: 0; } .ex-bubble > :last-child { margin-bottom: 0; }
-.ex-bubble p { margin: 0 0 .7em; }
-.ex-bubble ul, .ex-bubble ol { margin: .4em 0 .8em; padding-left: 1.5em; }
-.ex-bubble li { margin: .15em 0; }
-.ex-bubble h1, .ex-bubble h2, .ex-bubble h3, .ex-bubble h4 { margin: .9em 0 .4em; line-height: 1.3; }
-.ex-bubble pre { background: #f6f6f7; border: 1px solid #e6e6e6; border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: .6em 0; }
-.ex-bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
-.ex-bubble :not(pre) > code { background: #efefef; padding: .1em .35em; border-radius: 4px; }
-.ex-bubble blockquote { margin: .6em 0; padding-left: .9em; border-left: 3px solid #ddd; color: #666; }
-.ex-bubble table { border-collapse: collapse; margin: .5em 0; } .ex-bubble th, .ex-bubble td { border: 1px solid #ddd; padding: 5px 10px; }
-.ex-bubble a { color: #0a58ca; }
-.ex-img { max-width: 100%; border-radius: 8px; margin: 6px 0; display: block; }
-.ex-file { font-size: 13px; color: #666; margin: 4px 0; }
-`;
-function buildExportDoc(title, bodyHTML) {
-  const katexHref = "file://" + path.join(__dirname, "vendor", "katex", "katex.min.css");
-  const safeTitle = String(title || "对话").replace(/[<>&]/g, "");
-  // 导出文档只需本地 KaTeX 样式/字体 + 内嵌 data: 图片。锁死其它一切——尤其 img-src 只给 data:，
-  // 挡掉模型输出里可能夹带的远程 <img>（否则导出时会向外部发请求，成追踪/外传信标）。
-  const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline' file:; font-src file: data:; base-uri 'none'";
-  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + csp + '"><title>' + safeTitle +
-    '</title><link rel="stylesheet" href="' + katexHref + '"><style>' + EXPORT_CSS +
-    '</style></head><body><main class="ex-root">' + bodyHTML + '</main></body></html>';
-}
-
-ipcMain.handle("export-conversation", async (_e, payload) => {
-  const p = payload || {};
-  const base = (p.name || "对话");
-  try {
-    if (p.format === "md") {
-      const r = await dialog.showSaveDialog(mainWindow, { defaultPath: base + ".md", filters: [{ name: "Markdown", extensions: ["md"] }] });
-      if (r.canceled || !r.filePath) return { canceled: true };
-      fs.writeFileSync(r.filePath, p.markdown || "", "utf8");
-      return { ok: true, path: r.filePath };
-    }
-    // PDF / PNG: render the conversation in a hidden window
-    const html = buildExportDoc(p.title, p.bodyHTML || "");
-    const tmpFile = path.join(os.tmpdir(), "quartz-export-" + process.pid + "-" + Math.round(process.hrtime()[1]) + ".html");
-    fs.writeFileSync(tmpFile, html, "utf8");
-    // window width = column (700) + ~30px margin each side, so the PNG is a tight, centred document
-    const win = new BrowserWindow({ show: false, width: 760, height: 1000, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: false } });
-    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));       // 导出窗不打开任何新窗口
-    win.webContents.on("will-navigate", (e) => e.preventDefault());          // 也不允许它自己被导航走（防内容里的链接劫持这个 file:// 窗口）
-    try {
-      await win.loadFile(tmpFile);
-      await new Promise(r => setTimeout(r, 300));   // let KaTeX fonts / images settle
-      if (p.format === "pdf") {
-        const r = await dialog.showSaveDialog(mainWindow, { defaultPath: base + ".pdf", filters: [{ name: "PDF", extensions: ["pdf"] }] });
-        if (r.canceled || !r.filePath) return { canceled: true };
-        const data = await win.webContents.printToPDF({ printBackground: true, pageSize: "A4", margins: { marginType: "custom", top: 0.5, bottom: 0.5, left: 0.4, right: 0.4 } });
-        fs.writeFileSync(r.filePath, data);
-        return { ok: true, path: r.filePath };
-      } else {
-        // PNG — size the page to its full content, then capture
-        const dims = await win.webContents.executeJavaScript("({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})");
-        const W = Math.max(360, Math.min(2000, dims.w || 860));
-        const H = Math.max(200, Math.min(8000, dims.h || 1000));   // capped (×DPR must stay under GPU texture limit); PDF has no limit
-        win.setContentSize(W, H);
-        await new Promise(r => setTimeout(r, 250));
-        const r = await dialog.showSaveDialog(mainWindow, { defaultPath: base + ".png", filters: [{ name: "PNG 图片", extensions: ["png"] }] });
-        if (r.canceled || !r.filePath) return { canceled: true };
-        const img = await win.webContents.capturePage();
-        fs.writeFileSync(r.filePath, img.toPNG());
-        return { ok: true, path: r.filePath };
-      }
-    } finally {
-      win.destroy();
-      fs.unlink(tmpFile, () => {});
-    }
-  } catch (err) {
-    return { error: String((err && err.message) || err) };
-  }
+registerConversationExport({
+  ipcMain,
+  dialog,
+  fs,
+  path,
+  os: require("os"),
+  BrowserWindow,
+  getMainWindow: () => mainWindow,
+  appRoot: __dirname,
 });
 
 function buildMenu() {
@@ -808,7 +547,7 @@ app.whenReady().then(() => {
   applyQuickShortcut(DEF_QUICK, true);
   applyOpenShortcut(DEF_OPENMAIN, true);
 
-  setupAutoUpdate();
+  autoUpdate.setup();
 
   app.on("activate", () => { showMain(); });   // dock/taskbar click surfaces the window (incl. when it started hidden)
 });
